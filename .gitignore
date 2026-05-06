@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+dist/
+DerivedData/
+.swiftpm/
+NavRead.xcodeproj/
+Data/
+*.xcresult
+*.xcworkspace
+xcuserdata/
+.codex/
