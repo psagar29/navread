@@ -5,7 +5,7 @@
 <h1 align="center">NavRead</h1>
 
 <p align="center">
-  A native macOS commonplace-book app for capturing, organizing, and revisiting the quotes that matter.
+  A simple Mac app for saving the lines, pages, and ideas you never want to lose.
 </p>
 
 <p align="center">
@@ -14,29 +14,42 @@
   <img src="https://img.shields.io/badge/license-MIT-green" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/psagar29/navread/releases/latest/download/NavRead.dmg"><strong>Download NavRead for Mac</strong></a>
+</p>
+
 ---
 
 ## What is NavRead?
 
-NavRead turns your reading into a searchable, organized library. Every quote you save lives inside a book, chapter, and page — never just a loose snippet. Add books by title and NavRead fetches metadata and covers automatically, scaffolds chapters with AI, and lets you capture quotes from text, PDFs, images (via OCR), or the web.
+NavRead is a personal reading desk for your Mac. It helps you save favorite quotes, passages, notes, screenshots, PDFs, and web links in one clean library.
+
+Instead of dumping quotes into a notes app, NavRead keeps everything organized by book, chapter, and page. Add a book title, and NavRead looks up the book details and cover for you. Then you can save quotes manually, pull text from PDFs or images, ask AI to clean messy OCR, and export polished quote cards when you want to share something.
 
 ### Key Features
 
-- **Book-first organization** — quotes are always anchored to a book, chapter, and page
-- **Auto metadata & covers** — Google Books and Open Library lookup on book creation
-- **AI chapter scaffolds** — chapters are drafted automatically and are fully editable
-- **Multi-source capture** — paste text, import images/PDFs (Vision OCR), or extract from web URLs
-- **Full-text search** — find anything by title, author, quote text, tag, or note
-- **Export anywhere** — Markdown, JSON, CSV to clipboard or file, or directly to Apple Notes
-- **Glassmorphism UI** — frosted glass panels, spring animations, adaptive light/dark mode
-- **Local-first** — all data stays on your Mac in a SQLite database, no cloud required
-- **Codex AI integration** — optional OpenAI Codex connection for richer chapter scaffolds and contextual AI chat
+- **Add books quickly** - type a title, and NavRead fetches the cover and book details automatically.
+- **Save quotes with context** - keep quotes attached to the right book, chapter, and page.
+- **Capture from anywhere** - paste text, import PDFs, drop images, use OCR, or extract from web links.
+- **Ask AI for help** - clean OCR, classify notes, explain passages, create tags, and find quote candidates.
+- **Search your reading** - find books, authors, quotes, tags, and notes in seconds.
+- **Share beautiful quote cards** - export square, story, or landscape cards for social media.
+- **Private by default** - your library is stored locally on your Mac.
+- **Works without AI** - core reading and quote capture features work even when Codex is not connected.
+
+## Download
+
+Download the latest Mac installer:
+
+**[Download NavRead.dmg](https://github.com/psagar29/navread/releases/latest/download/NavRead.dmg)**
+
+Open the DMG, drag `NavRead.app` into `Applications`, then launch NavRead from Launchpad or Spotlight.
 
 ## Screenshots
 
-> *Build and run to see the full UI — glassmorphism panels, animated book covers, quote timeline, AI palette, and more.*
+> Screenshots coming soon.
 
-## Getting Started
+## For Developers
 
 ### Requirements
 
