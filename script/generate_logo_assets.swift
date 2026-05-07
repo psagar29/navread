@@ -10,12 +10,6 @@ let sourceURL = URL(fileURLWithPath: CommandLine.arguments[1])
 let resourcesURL = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
 try FileManager.default.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
 
-let originalURL = resourcesURL.appendingPathComponent("NavReadLogoOriginal.png")
-if FileManager.default.fileExists(atPath: originalURL.path) {
-    try FileManager.default.removeItem(at: originalURL)
-}
-try FileManager.default.copyItem(at: sourceURL, to: originalURL)
-
 guard let image = NSImage(contentsOf: sourceURL),
       let tiff = image.tiffRepresentation,
       let sourceRep = NSBitmapImageRep(data: tiff) else {

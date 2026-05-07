@@ -22,6 +22,10 @@ enum LibraryPaths {
         assets.appendingPathComponent("Captures", isDirectory: true)
     }
 
+    static var cards: URL {
+        assets.appendingPathComponent("Cards", isDirectory: true)
+    }
+
     static var libraryExistsBeforeSetup: Bool {
         FileManager.default.fileExists(atPath: root.path)
     }
@@ -30,5 +34,6 @@ enum LibraryPaths {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: covers, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: captures, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cards, withIntermediateDirectories: true)
     }
 }

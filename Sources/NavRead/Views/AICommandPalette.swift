@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AICommandPalette: View {
     @EnvironmentObject private var store: NavReadStore
@@ -8,7 +9,14 @@ struct AICommandPalette: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var prompt = ""
     @State private var messages: [AIChatMessage] = []
+    @State private var attachments: [AIAttachment] = []
+    @State private var attachmentError = ""
+    @State private var linkInput = ""
+    @State private var showingLinkInput = false
+    @State private var fileImporterPresented = false
     @State private var working = false
+    @State private var importingAttachment = false
+    @State private var isAttachmentDropTargeted = false
     @State private var appeared = false
 
     private var accent: Color {
@@ -62,6 +70,13 @@ struct AICommandPalette: View {
             withAnimation(reduceMotion ? nil : NavReadTheme.animationBouncy) {
                 appeared = true
             }
+        }
+        .fileImporter(
+            isPresented: $fileImporterPresented,
+            allowedContentTypes: [.pdf, .image, .plainText],
+            allowsMultipleSelection: true
+        ) { result in
+            handleFileImport(result)
         }
     }
 
@@ -157,44 +172,154 @@ struct AICommandPalette: View {
         }
     }
 
-    private var composer: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            ZStack(alignment: .topLeading) {
-                AIPromptTextView(text: $prompt, isEditable: !working, onSubmit: run)
-                    .frame(minHeight: 76, idealHeight: 82, maxHeight: 130)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 11)
-                    .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(colorScheme == .dark ? Color.white.opacity(0.045) : Color.black.opacity(0.025))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .strokeBorder(working ? Color.primary.opacity(0.28) : Color.primary.opacity(0.10), lineWidth: 1)
-                    )
-
-                if prompt.isEmpty {
-                    Text("Ask about this book, chapter, quote, capture, OCR text, or code...")
-                        .font(.system(size: 15))
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 12)
-                        .allowsHitTesting(false)
+    private var attachmentStrip: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if showingLinkInput {
+                HStack(spacing: 8) {
+                    TextField("https://example.com/article", text: $linkInput)
+                        .textFieldStyle(NavReadTextFieldStyle())
+                        .onSubmit { addLinkAttachment() }
+                    Button {
+                        addLinkAttachment()
+                    } label: {
+                        Label("Attach Link", systemImage: "plus")
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(linkInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || importingAttachment || attachments.count >= AIAttachmentPolicy.maxItems)
                 }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
-            Button {
-                run()
-            } label: {
-                Image(systemName: working ? "waveform" : "arrow.up")
-                    .font(.system(size: 17, weight: .bold))
-                    .frame(width: 44, height: 44)
-                    .contentTransition(.symbolEffect(.replace))
+            if !attachments.isEmpty || importingAttachment {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(attachments) { attachment in
+                            AIAttachmentChip(attachment: attachment) {
+                                withAnimation(NavReadTheme.animationSnappy) {
+                                    attachments.removeAll { $0.id == attachment.id }
+                                }
+                            }
+                        }
+                        if importingAttachment {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Attaching")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(Color.primary.opacity(colorScheme == .dark ? 0.065 : 0.04), in: Capsule())
+                        }
+                    }
+                    .padding(.vertical, 1)
+                }
+                .scrollIndicators(.hidden)
             }
-            .buttonStyle(AISendButtonStyle(accent: accent, working: working))
-            .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || working)
-            .help("Send")
+
+            if !attachmentError.isEmpty {
+                Text(attachmentError)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
+    }
+
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if showingLinkInput || !attachments.isEmpty || importingAttachment || !attachmentError.isEmpty {
+                attachmentStrip
+            }
+
+            HStack(alignment: .bottom, spacing: 10) {
+                Menu {
+                    Button {
+                        fileImporterPresented = true
+                    } label: {
+                        Label("Attach File", systemImage: "doc.badge.plus")
+                    }
+                    .disabled(attachments.count >= AIAttachmentPolicy.maxItems)
+
+                    Button {
+                        withAnimation(NavReadTheme.animationSnappy) {
+                            showingLinkInput.toggle()
+                        }
+                    } label: {
+                        Label("Attach Link", systemImage: "link.badge.plus")
+                    }
+                    .disabled(attachments.count >= AIAttachmentPolicy.maxItems)
+                } label: {
+                    Image(systemName: "paperclip")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 38, height: 38)
+                        .background(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04), in: Circle())
+                        .overlay(Circle().strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .disabled(working || importingAttachment || attachments.count >= AIAttachmentPolicy.maxItems)
+                .help("Attach files, images, PDFs, or links")
+                .accessibilityLabel("Attachments")
+
+                ZStack(alignment: .topLeading) {
+                    AIPromptTextView(text: $prompt, isEditable: !working, onSubmit: run)
+                        .frame(minHeight: 76, idealHeight: 82, maxHeight: 130)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 11)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(colorScheme == .dark ? Color.white.opacity(0.045) : Color.black.opacity(0.025))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .strokeBorder(composerBorder, lineWidth: isAttachmentDropTargeted ? 1.5 : 1)
+                        )
+
+                    if prompt.isEmpty {
+                        Text(isAttachmentDropTargeted ? "Drop to attach..." : "Ask about this book, chapter, quote, capture, OCR text, or code...")
+                            .font(.system(size: 15))
+                            .foregroundStyle(isAttachmentDropTargeted ? .primary : .tertiary)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 12)
+                            .allowsHitTesting(false)
+                    }
+
+                    if isAttachmentDropTargeted {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(accent.opacity(0.06))
+                            .overlay(
+                                Label("Drop files or links", systemImage: "paperclip")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(.primary)
+                            )
+                            .allowsHitTesting(false)
+                    }
+                }
+                .onDrop(
+                    of: [UTType.fileURL.identifier, UTType.url.identifier, UTType.plainText.identifier],
+                    isTargeted: $isAttachmentDropTargeted,
+                    perform: handleAttachmentDrop
+                )
+
+                Button {
+                    run()
+                } label: {
+                    Image(systemName: working ? "waveform" : "arrow.up")
+                        .font(.system(size: 17, weight: .bold))
+                        .frame(width: 44, height: 44)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .buttonStyle(AISendButtonStyle(accent: accent, working: working))
+                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || working || importingAttachment)
+                .help("Send")
+            }
+        }
+    }
+
+    private var composerBorder: Color {
+        if isAttachmentDropTargeted { return accent.opacity(0.38) }
+        return working ? Color.primary.opacity(0.28) : Color.primary.opacity(0.10)
     }
 
     private func run() {
@@ -202,10 +327,13 @@ struct AICommandPalette: View {
         guard !trimmed.isEmpty, !working else { return }
 
         let history = conversationHistory
+        let activeAttachments = attachments
         prompt = ""
+        attachments = []
+        attachmentError = ""
         working = true
 
-        let userMessage = AIChatMessage(role: .user, content: trimmed)
+        let userMessage = AIChatMessage(role: .user, content: trimmed, attachments: activeAttachments)
         let assistantMessage = AIChatMessage(role: .assistant, content: "", isStreaming: true)
         withAnimation(reduceMotion ? nil : NavReadTheme.animationGentle) {
             messages.append(userMessage)
@@ -214,7 +342,7 @@ struct AICommandPalette: View {
 
         Task {
             do {
-                for try await delta in store.askAIStream(trimmed, conversationHistory: history) {
+                for try await delta in store.askAIStream(trimmed, conversationHistory: history, attachments: activeAttachments) {
                     await MainActor.run {
                         append(delta, to: assistantMessage.id)
                     }
@@ -229,6 +357,185 @@ struct AICommandPalette: View {
                 }
             }
         }
+    }
+
+    private func handleFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            addFileAttachments(urls)
+        case .failure(let error):
+            attachmentError = error.localizedDescription
+        }
+    }
+
+    private func handleAttachmentDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard !working, !importingAttachment else { return false }
+        let remaining = max(0, AIAttachmentPolicy.maxItems - attachments.count)
+        guard remaining > 0 else {
+            attachmentError = "Attachment limit reached."
+            return false
+        }
+        let selected = Array(providers.prefix(remaining))
+        if providers.count > remaining {
+            attachmentError = "Only \(AIAttachmentPolicy.maxItems) attachments can be sent at once."
+        }
+        importingAttachment = true
+        Task { @MainActor in
+            var fileURLs: [URL] = []
+            var links: [String] = []
+            var texts: [String] = []
+
+            for provider in selected {
+                if let url = await loadURL(from: provider, typeIdentifier: UTType.fileURL.identifier), url.isFileURL {
+                    fileURLs.append(url)
+                    continue
+                }
+                if let url = await loadURL(from: provider, typeIdentifier: UTType.url.identifier) {
+                    if url.isFileURL {
+                        fileURLs.append(url)
+                    } else {
+                        links.append(url.absoluteString)
+                    }
+                    continue
+                }
+                if let text = await loadText(from: provider), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if looksLikeURL(text) {
+                        links.append(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    } else {
+                        texts.append(text)
+                    }
+                }
+            }
+
+            var imported: [AIAttachment] = []
+            var failures: [String] = []
+            for url in fileURLs {
+                do {
+                    imported.append(try await store.importAIAttachmentFile(url))
+                } catch {
+                    failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            for link in links {
+                do {
+                    imported.append(try await store.importAIAttachmentLink(link))
+                } catch {
+                    failures.append("\(link): \(error.localizedDescription)")
+                }
+            }
+            for (index, text) in texts.enumerated() {
+                do {
+                    imported.append(try await store.importAIAttachmentText(text, name: texts.count == 1 ? "Dropped Text" : "Dropped Text \(index + 1)"))
+                } catch {
+                    failures.append(error.localizedDescription)
+                }
+            }
+
+            await MainActor.run {
+                withAnimation(reduceMotion ? nil : NavReadTheme.animationGentle) {
+                    attachments.append(contentsOf: imported)
+                }
+                importingAttachment = false
+                if !failures.isEmpty {
+                    attachmentError = failures.joined(separator: "\n")
+                } else if imported.isEmpty {
+                    attachmentError = "Nothing readable was dropped."
+                } else {
+                    attachmentError = "Attached \(imported.count) item\(imported.count == 1 ? "" : "s")."
+                }
+            }
+        }
+        return true
+    }
+
+    private func addFileAttachments(_ urls: [URL]) {
+        let remaining = max(0, AIAttachmentPolicy.maxItems - attachments.count)
+        let selected = Array(urls.prefix(remaining))
+        guard !selected.isEmpty else {
+            attachmentError = "Attachment limit reached."
+            return
+        }
+        if urls.count > remaining {
+            attachmentError = "Only \(AIAttachmentPolicy.maxItems) attachments can be sent at once."
+        }
+        importingAttachment = true
+        Task {
+            var imported: [AIAttachment] = []
+            var failures: [String] = []
+            for url in selected {
+                do {
+                    imported.append(try await store.importAIAttachmentFile(url))
+                } catch {
+                    failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            await MainActor.run {
+                withAnimation(reduceMotion ? nil : NavReadTheme.animationGentle) {
+                    attachments.append(contentsOf: imported)
+                }
+                importingAttachment = false
+                if !failures.isEmpty {
+                    attachmentError = failures.joined(separator: "\n")
+                } else if imported.isEmpty {
+                    attachmentError = "No attachments imported."
+                } else if attachmentError.isEmpty {
+                    attachmentError = "Attached \(imported.count) item\(imported.count == 1 ? "" : "s")."
+                }
+            }
+        }
+    }
+
+    private func addLinkAttachment() {
+        let value = linkInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, attachments.count < AIAttachmentPolicy.maxItems else { return }
+        importingAttachment = true
+        attachmentError = ""
+        Task {
+            do {
+                let attachment = try await store.importAIAttachmentLink(value)
+                await MainActor.run {
+                    withAnimation(reduceMotion ? nil : NavReadTheme.animationGentle) {
+                        attachments.append(attachment)
+                        linkInput = ""
+                        showingLinkInput = false
+                    }
+                    importingAttachment = false
+                    attachmentError = "Attached link."
+                }
+            } catch {
+                await MainActor.run {
+                    importingAttachment = false
+                    attachmentError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func loadURL(from provider: NSItemProvider, typeIdentifier: String) async -> URL? {
+        guard provider.hasItemConformingToTypeIdentifier(typeIdentifier) else { return nil }
+        do {
+            let value = try await provider.loadItemString(for: typeIdentifier)
+            return URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines))
+        } catch {
+            return nil
+        }
+    }
+
+    @MainActor
+    private func loadText(from provider: NSItemProvider) async -> String? {
+        guard provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) else { return nil }
+        do {
+            return try await provider.loadItemString(for: UTType.plainText.identifier)
+        } catch {
+            return nil
+        }
+    }
+
+    private func looksLikeURL(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased() else { return false }
+        return ["http", "https", "file"].contains(scheme)
     }
 
     private func append(_ delta: String, to id: UUID) {
@@ -268,6 +575,7 @@ private struct AIChatMessage: Identifiable, Equatable {
     var id = UUID()
     var role: Role
     var content: String
+    var attachments: [AIAttachment] = []
     var isStreaming = false
 }
 
@@ -371,6 +679,18 @@ private struct AIMessageBubble: View {
                         .font(.system(size: 14))
                         .lineSpacing(3)
                         .textSelection(.enabled)
+                    if !message.attachments.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(message.attachments) { attachment in
+                                Label(attachment.name, systemImage: attachment.kind.icon)
+                                    .font(.caption.weight(.semibold))
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 5)
+                                    .background(Color.primary.opacity(0.07), in: Capsule())
+                            }
+                        }
+                    }
                 } else {
                     FormattedAIResponseView(text: message.content, isStreaming: message.isStreaming, accent: accent)
                 }
@@ -403,6 +723,54 @@ private struct AIMessageBubble: View {
             return Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.07)
         }
         return colorScheme == .dark ? Color.white.opacity(0.045) : Color.black.opacity(0.025)
+    }
+}
+
+private struct AIAttachmentChip: View {
+    @Environment(\.colorScheme) private var colorScheme
+    var attachment: AIAttachment
+    var remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: attachment.kind.icon)
+                .font(.system(size: 12, weight: .semibold))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(attachment.name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                Text(attachmentSubtitle)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Button {
+                remove()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .frame(width: 18, height: 18)
+                    .background(Color.primary.opacity(0.06), in: Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 220)
+        .background(Color.primary.opacity(colorScheme == .dark ? 0.065 : 0.04), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
+        )
+        .help(attachment.textPreview.isEmpty ? attachment.name : attachment.textPreview)
+    }
+
+    private var attachmentSubtitle: String {
+        let count = attachment.extractedText.count
+        if count == 0 {
+            return "\(attachment.kind.title) / no text"
+        }
+        return "\(attachment.kind.title) / \(count) chars"
     }
 }
 
@@ -804,6 +1172,42 @@ private struct AIPromptTextView: NSViewRepresentable {
                 return
             }
             super.keyDown(with: event)
+        }
+    }
+}
+
+private extension NSItemProvider {
+    @MainActor
+    func loadItemString(for typeIdentifier: String) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            loadItem(forTypeIdentifier: typeIdentifier, options: nil) { item, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let item else {
+                    continuation.resume(throwing: AIError.message("Dropped item could not be read."))
+                    return
+                }
+                if let url = item as? URL {
+                    continuation.resume(returning: url.absoluteString)
+                    return
+                }
+                if let url = item as? NSURL {
+                    continuation.resume(returning: (url as URL).absoluteString)
+                    return
+                }
+                if let string = item as? String {
+                    continuation.resume(returning: string)
+                    return
+                }
+                if let data = item as? Data,
+                   let string = String(data: data, encoding: .utf8) {
+                    continuation.resume(returning: string)
+                    return
+                }
+                continuation.resume(throwing: AIError.message("Dropped item type is not supported."))
+            }
         }
     }
 }

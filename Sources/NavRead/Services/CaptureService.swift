@@ -6,6 +6,12 @@ import Vision
 
 actor CaptureService {
     func extractText(from url: URL) async throws -> (type: CaptureType, text: String, assetPath: String?) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if scoped {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
         try LibraryPaths.ensure()
         let ext = url.pathExtension.lowercased()
         if ext == "pdf" {

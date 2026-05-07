@@ -90,6 +90,7 @@ NavRead/
 | OAuth tokens | Local credential file with `0600` permissions |
 
 NavRead does not use iCloud, Keychain, or any cloud service. All data stays local.
+Book cover images are runtime cache files and should never be committed to the repo.
 
 ## Codex AI (Optional)
 

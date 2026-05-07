@@ -1,10 +1,15 @@
 .DS_Store
 .build/
 dist/
+.reinstall-backups/
 DerivedData/
 .swiftpm/
 NavRead.xcodeproj/
 Data/
+*.app/
+*.sqlite
+*.sqlite-*
+codex_tokens.json
 *.xcresult
 *.xcworkspace
 xcuserdata/

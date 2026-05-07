@@ -151,6 +151,31 @@ struct ShareMenu: View {
                     Label("Add to Apple Notes", systemImage: "note.text")
                 }
             }
+            Section("Quote Card") {
+                ForEach(QuoteCardFormat.allCases) { format in
+                    Menu(format.title) {
+                        Button {
+                            store.copySelectedQuoteCard(format: format)
+                        } label: {
+                            Label("Copy Card", systemImage: "doc.on.doc")
+                        }
+                        Button {
+                            store.saveSelectedQuoteCard(format: format)
+                        } label: {
+                            Label("Save PNG", systemImage: "arrow.down.doc")
+                        }
+                        Divider()
+                        ForEach(SocialShareDestination.allCases) { destination in
+                            Button {
+                                store.shareSelectedQuoteCard(destination: destination, format: format)
+                            } label: {
+                                Label(destination.title, systemImage: destination.icon)
+                            }
+                        }
+                    }
+                    .disabled(store.selectedQuote == nil)
+                }
+            }
         } label: {
             Label("Share", systemImage: "square.and.arrow.up")
         }

@@ -456,7 +456,11 @@ final class NavReadStore: ObservableObject {
         return await aiService.chatReply(prompt: prompt, context: aiContextDescription())
     }
 
-    func askAIStream(_ prompt: String, conversationHistory: String = "") -> AsyncThrowingStream<String, Error> {
+    func askAIStream(
+        _ prompt: String,
+        conversationHistory: String = "",
+        attachments: [AIAttachment] = []
+    ) -> AsyncThrowingStream<String, Error> {
         guard let book = selectedBook else {
             return AsyncThrowingStream { continuation in
                 continuation.yield("Add a book first.")
@@ -469,10 +473,109 @@ final class NavReadStore: ObservableObject {
                 continuation.finish()
             }
         }
+        let context = aiContextDescription(attachments: attachments)
         return aiService.chatReplyStream(
             prompt: prompt,
-            context: aiContextDescription(),
+            context: context,
             conversationHistory: conversationHistory
+        )
+    }
+
+    func importAIAttachmentFile(_ url: URL) async throws -> AIAttachment {
+        guard let book = selectedBook else {
+            throw AIError.message("Add a book before attaching files.")
+        }
+        isWorking = true
+        defer { isWorking = false }
+        let extracted = try await captureService.extractText(from: url)
+        let capture = Capture(
+            id: UUID(),
+            bookID: book.id,
+            chapterID: selectedChapterID,
+            type: extracted.type,
+            rawText: extracted.text,
+            assetPath: extracted.assetPath,
+            sourceURL: url.path,
+            createdAt: .now
+        )
+        try database.insert(capture: capture)
+        loadSelectedBookCollections()
+
+        return AIAttachment(
+            kind: attachmentKind(for: extracted.type),
+            name: url.lastPathComponent,
+            extractedText: extracted.text,
+            sourceURL: url.path,
+            assetPath: extracted.assetPath,
+            captureID: capture.id,
+            createdAt: capture.createdAt
+        )
+    }
+
+    func importAIAttachmentLink(_ rawURL: String) async throws -> AIAttachment {
+        guard let book = selectedBook else {
+            throw AIError.message("Add a book before attaching links.")
+        }
+        let cleanedURL = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedURL.isEmpty else {
+            throw AIError.message("Enter a link first.")
+        }
+        isWorking = true
+        defer { isWorking = false }
+        let text = try await captureService.extractWebText(from: cleanedURL)
+        let capture = Capture(
+            id: UUID(),
+            bookID: book.id,
+            chapterID: selectedChapterID,
+            type: .webURL,
+            rawText: text,
+            assetPath: nil,
+            sourceURL: cleanedURL,
+            createdAt: .now
+        )
+        try database.insert(capture: capture)
+        loadSelectedBookCollections()
+
+        return AIAttachment(
+            kind: .web,
+            name: URL(string: cleanedURL)?.host() ?? "Web Link",
+            extractedText: text,
+            sourceURL: cleanedURL,
+            assetPath: nil,
+            captureID: capture.id,
+            createdAt: capture.createdAt
+        )
+    }
+
+    func importAIAttachmentText(_ text: String, name: String = "Dropped Text") async throws -> AIAttachment {
+        guard let book = selectedBook else {
+            throw AIError.message("Add a book before attaching text.")
+        }
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else {
+            throw AIError.message("Dropped text was empty.")
+        }
+        let capture = Capture(
+            id: UUID(),
+            bookID: book.id,
+            chapterID: selectedChapterID,
+            type: .manualText,
+            rawText: cleaned,
+            assetPath: nil,
+            sourceURL: "",
+            createdAt: .now
+        )
+        try database.insert(capture: capture)
+        loadSelectedBookCollections()
+
+        return AIAttachment(
+            kind: .text,
+            name: name,
+            extractedText: cleaned,
+            sourceURL: "",
+            assetPath: nil,
+            captureID: capture.id,
+            createdAt: capture.createdAt
         )
     }
 
@@ -593,6 +696,77 @@ final class NavReadStore: ObservableObject {
         statusMessage = "Sent \(book.title) to Notes."
     }
 
+    func copySelectedQuoteCard(format: QuoteCardFormat = .square) {
+        guard let quote = selectedQuote, let book = selectedBook else { return }
+        guard let url = QuoteCardRenderer.render(quote: quote, book: book, format: format) else {
+            statusMessage = "Could not render quote card."
+            return
+        }
+        copyQuoteCardToPasteboard(url: url, quote: quote, book: book)
+        statusMessage = "Quote card copied."
+    }
+
+    func saveSelectedQuoteCard(format: QuoteCardFormat = .square) {
+        guard let quote = selectedQuote, let book = selectedBook else { return }
+        guard let rendered = QuoteCardRenderer.render(quote: quote, book: book, format: format) else {
+            statusMessage = "Could not render quote card."
+            return
+        }
+        let panel = NSSavePanel()
+        panel.title = "Save Quote Card"
+        panel.nameFieldStringValue = "\(safeFilename(book.displayTitle))-quote-card.png"
+        panel.allowedContentTypes = [.png]
+        if panel.runModal() == .OK, let destination = panel.url {
+            do {
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.copyItem(at: rendered, to: destination)
+                statusMessage = "Quote card saved."
+            } catch {
+                statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func shareSelectedQuoteCard(destination: SocialShareDestination = .system, format: QuoteCardFormat = .square) {
+        guard let quote = selectedQuote, let book = selectedBook else { return }
+        let quoteText = socialShareText(quote: quote, book: book)
+        guard let rendered = QuoteCardRenderer.render(quote: quote, book: book, format: format) else {
+            statusMessage = "Could not render quote card."
+            return
+        }
+
+        switch destination {
+        case .system:
+            let picker = NSSharingServicePicker(items: [rendered, quoteText])
+            picker.show(relativeTo: .zero, of: NSApp.keyWindow?.contentView ?? NSView(), preferredEdge: .minY)
+            statusMessage = "Opened share sheet."
+        case .x:
+            copyQuoteCardToPasteboard(url: rendered, quote: quote, book: book)
+            openShareURL("https://twitter.com/intent/tweet?text=\(urlEncoded(quoteText))")
+            statusMessage = "Quote card copied. Opened X composer."
+        case .whatsapp:
+            copyQuoteCardToPasteboard(url: rendered, quote: quote, book: book)
+            openShareURL("https://wa.me/?text=\(urlEncoded(quoteText))")
+            statusMessage = "Quote card copied. Opened WhatsApp share."
+        case .instagram:
+            copyQuoteCardToPasteboard(url: rendered, quote: quote, book: book)
+            openShareURL("https://www.instagram.com/")
+            statusMessage = "Quote card copied. Paste it into Instagram."
+        case .youtube:
+            copyQuoteCardToPasteboard(url: rendered, quote: quote, book: book)
+            openShareURL("https://www.youtube.com/")
+            statusMessage = "Quote card copied. Paste it into YouTube Studio or Community."
+        case .messages:
+            if let service = NSSharingService(named: .composeMessage) {
+                service.subject = "NavRead quote"
+                service.perform(withItems: [rendered, quoteText])
+                statusMessage = "Opened Messages share."
+            } else {
+                shareSelectedQuoteCard(destination: .system, format: format)
+            }
+        }
+    }
+
     func openLibraryFolder() {
         NSWorkspace.shared.activateFileViewerSelecting([LibraryPaths.root])
     }
@@ -682,7 +856,7 @@ final class NavReadStore: ObservableObject {
         return value.components(separatedBy: illegal).joined(separator: "-")
     }
 
-    private func aiContextDescription() -> String {
+    private func aiContextDescription(attachments: [AIAttachment] = []) -> String {
         guard let book = selectedBook else { return "No selected book." }
         let chapterMap = chapters.enumerated().map { index, chapter in
             let pages: String
@@ -723,6 +897,10 @@ final class NavReadStore: ObservableObject {
             """
         } ?? "Selected quote: none selected."
 
+        let attachmentText = attachments.prefix(AIAttachmentPolicy.maxItems).enumerated().map { index, attachment in
+            "\(index + 1). \(attachment.promptDescription())"
+        }.joined(separator: "\n\n")
+
         return """
         Book:
         Title: \(book.title)
@@ -743,7 +921,51 @@ final class NavReadStore: ObservableObject {
 
         Recent captures:
         \(captureMap.isEmpty ? "No captures yet." : captureMap)
+
+        Active user attachments for this AI turn:
+        \(attachmentText.isEmpty ? "None." : attachmentText)
         """
+    }
+
+    private func attachmentKind(for type: CaptureType) -> AIAttachmentKind {
+        switch type {
+        case .pdfPage:
+            .pdf
+        case .imageFile, .screenshot:
+            .image
+        case .webURL:
+            .web
+        case .manualText:
+            .text
+        }
+    }
+
+    private func socialShareText(quote: Quote, book: Book) -> String {
+        var parts = ["\"\(quote.text)\"", "\(book.displayTitle) - \(book.displayAuthor)"]
+        if !quote.pageLocator.isEmpty {
+            parts.append(quote.pageLocator)
+        }
+        parts.append("Saved with NavRead")
+        return parts.joined(separator: "\n")
+    }
+
+    private func copyQuoteCardToPasteboard(url: URL, quote: Quote, book: Book) {
+        NSPasteboard.general.clearContents()
+        if let image = NSImage(contentsOf: url) {
+            NSPasteboard.general.writeObjects([image, url as NSURL])
+        } else {
+            NSPasteboard.general.writeObjects([url as NSURL])
+        }
+        NSPasteboard.general.setString(socialShareText(quote: quote, book: book), forType: .string)
+    }
+
+    private func openShareURL(_ value: String) {
+        guard let url = URL(string: value) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func urlEncoded(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
     }
 
     private func appleScriptEscaped(_ value: String) -> String {

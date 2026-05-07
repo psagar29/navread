@@ -182,6 +182,66 @@ struct CandidateSource: Hashable {
     var sourceURL: String
 }
 
+enum AIAttachmentKind: String, Codable, CaseIterable, Identifiable {
+    case pdf
+    case image
+    case web
+    case text
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .pdf: "PDF"
+        case .image: "Image"
+        case .web: "Link"
+        case .text: "Text"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .pdf: "doc.richtext"
+        case .image: "photo"
+        case .web: "link"
+        case .text: "text.alignleft"
+        }
+    }
+}
+
+struct AIAttachment: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var kind: AIAttachmentKind
+    var name: String
+    var extractedText: String
+    var sourceURL: String
+    var assetPath: String?
+    var captureID: UUID?
+    var createdAt: Date
+
+    var textPreview: String {
+        extractedText
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func promptDescription(maxCharacters: Int = 5000) -> String {
+        let cleanText = extractedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = cleanText.isEmpty ? "No readable text extracted." : String(cleanText.prefix(maxCharacters))
+        return """
+        Attachment: \(name)
+        Type: \(kind.title)
+        Source: \(sourceURL.isEmpty ? "local capture" : sourceURL)
+        Extracted text:
+        \(body)
+        """
+    }
+}
+
+enum AIAttachmentPolicy {
+    static let maxItems = 5
+}
+
 extension Book {
     static let sample = Book(
         id: UUID(),

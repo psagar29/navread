@@ -58,3 +58,26 @@ import Testing
 
     #expect(state == FirstRunOnboardingState(hasCompleted: false, hasStarted: true, shouldPresent: true))
 }
+
+@Test func aiAttachmentPromptTruncatesReadableText() {
+    let attachment = AIAttachment(
+        kind: .pdf,
+        name: "notes.pdf",
+        extractedText: String(repeating: "a", count: 32),
+        sourceURL: "/tmp/notes.pdf",
+        assetPath: nil,
+        captureID: nil,
+        createdAt: .now
+    )
+
+    let prompt = attachment.promptDescription(maxCharacters: 12)
+
+    #expect(prompt.contains("notes.pdf"))
+    #expect(prompt.contains("PDF"))
+    #expect(prompt.contains(String(repeating: "a", count: 12)))
+    #expect(!prompt.contains(String(repeating: "a", count: 13)))
+}
+
+@Test func aiAttachmentPolicyCapsSingleTurnUploads() {
+    #expect(AIAttachmentPolicy.maxItems == 5)
+}
