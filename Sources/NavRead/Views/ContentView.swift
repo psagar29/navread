@@ -78,7 +78,11 @@ struct ContentView: View {
             showingAddBook = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .navReadQuickCapture)) { _ in
-            showingCapture = true
+            if store.selectedBook == nil {
+                showingAddBook = true
+            } else {
+                showingCapture = true
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .navReadCodexAuthCompleted)) { notification in
             store.codexCallbackCompleted(accountID: notification.userInfo?["accountID"] as? String ?? "")

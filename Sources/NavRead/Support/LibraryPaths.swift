@@ -27,7 +27,7 @@ enum LibraryPaths {
     }
 
     static var libraryExistsBeforeSetup: Bool {
-        FileManager.default.fileExists(atPath: root.path)
+        FileManager.default.fileExists(atPath: database.path)
     }
 
     static func ensure() throws {

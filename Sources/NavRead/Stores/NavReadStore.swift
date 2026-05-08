@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 final class NavReadStore: ObservableObject {
     @Published var books: [Book] = []
     @Published var allQuotes: [Quote] = []
+    @Published var allCaptures: [Capture] = []
     @Published var chapters: [Chapter] = []
     @Published var quotes: [Quote] = []
     @Published var captures: [Capture] = []
@@ -63,6 +64,10 @@ final class NavReadStore: ObservableObject {
                 || allQuotes.contains { $0.bookID == book.id && $0.text.lowercased().contains(term) }
                 || allQuotes.contains { $0.bookID == book.id && $0.tags.contains(where: { $0.lowercased().contains(term) }) }
                 || allQuotes.contains { $0.bookID == book.id && $0.note.lowercased().contains(term) }
+                || allCaptures.contains {
+                    $0.bookID == book.id
+                        && ($0.rawText.lowercased().contains(term) || $0.sourceURL.lowercased().contains(term))
+                }
         }
     }
 
@@ -85,6 +90,7 @@ final class NavReadStore: ObservableObject {
         do {
             books = try database.loadBooks()
             allQuotes = try database.loadAllQuotes()
+            allCaptures = try database.loadAllCaptures()
             if selectedBookID == nil || books.contains(where: { $0.id == selectedBookID }) == false {
                 selectedBookID = books.first?.id
             }
@@ -151,33 +157,40 @@ final class NavReadStore: ObservableObject {
             updatedAt: now
         )
         do {
-            try database.insert(book: book)
-            for (index, draft) in drafts.enumerated() {
-                try database.insert(
-                    chapter: Chapter(
-                        id: UUID(),
-                        bookID: book.id,
-                        title: draft.title,
-                        orderIndex: index,
-                        summary: draft.summary,
-                        pageStart: draft.pageStart,
-                        pageEnd: draft.pageEnd,
-                        aiGenerated: true,
-                        createdAt: now,
-                        updatedAt: now
+            do {
+                try database.transaction {
+                    try database.insert(book: book)
+                    for (index, draft) in drafts.enumerated() {
+                        try database.insert(
+                            chapter: Chapter(
+                                id: UUID(),
+                                bookID: book.id,
+                                title: draft.title,
+                                orderIndex: index,
+                                summary: draft.summary,
+                                pageStart: draft.pageStart,
+                                pageEnd: draft.pageEnd,
+                                aiGenerated: true,
+                                createdAt: now,
+                                updatedAt: now
+                            )
+                        )
+                    }
+                    try database.insert(
+                        provenance: AIProvenance(
+                            id: UUID(),
+                            model: authenticated ? "gpt-5.4" : "offline-scaffold",
+                            purpose: "chapter_scaffold",
+                            inputScope: .book,
+                            linkedID: book.id,
+                            createdAt: now
+                        )
                     )
-                )
+                }
+            } catch {
+                deleteLocalAsset(path: cover.path)
+                throw error
             }
-            try database.insert(
-                provenance: AIProvenance(
-                    id: UUID(),
-                    model: authenticated ? "gpt-5.4" : "offline-scaffold",
-                    purpose: "chapter_scaffold",
-                    inputScope: .book,
-                    linkedID: book.id,
-                    createdAt: now
-                )
-            )
             selectedBookID = book.id
             refresh()
             statusMessage = "Added \(book.title)."
@@ -254,9 +267,11 @@ final class NavReadStore: ObservableObject {
         guard let quote = selectedQuote else { return }
         do {
             try database.deleteQuote(quote.id)
+            deleteQuoteCardAssets(for: quote.id)
             selectedQuoteID = nil
             loadSelectedBookCollections()
             allQuotes = try database.loadAllQuotes()
+            allCaptures = try database.loadAllCaptures()
         } catch {
             statusMessage = error.localizedDescription
         }
@@ -265,10 +280,14 @@ final class NavReadStore: ObservableObject {
     func deleteBook(_ book: Book) {
         do {
             let capturePaths = try database.loadCaptures(bookID: book.id).compactMap(\.assetPath)
+            let quoteIDs = try database.loadQuotes(bookID: book.id).map(\.id)
             try database.deleteBook(book.id)
             deleteLocalAsset(path: book.coverAssetPath)
             for path in capturePaths {
                 deleteLocalAsset(path: path)
+            }
+            for quoteID in quoteIDs {
+                deleteQuoteCardAssets(for: quoteID)
             }
             if selectedBookID == book.id {
                 selectedBookID = nil
@@ -356,6 +375,7 @@ final class NavReadStore: ObservableObject {
             try database.insert(capture: capture)
             lastCandidateSource = CandidateSource(captureID: capture.id, sourceType: .clipboard, sourceURL: "")
             loadSelectedBookCollections()
+            allCaptures = try database.loadAllCaptures()
             return await aiService.quoteCandidates(from: cleaned, chapters: chapters)
         } catch {
             statusMessage = error.localizedDescription
@@ -379,13 +399,19 @@ final class NavReadStore: ObservableObject {
                 sourceURL: url.path,
                 createdAt: .now
             )
-            try database.insert(capture: capture)
+            do {
+                try database.insert(capture: capture)
+            } catch {
+                deleteLocalAsset(path: extracted.assetPath)
+                throw error
+            }
             lastCandidateSource = CandidateSource(
                 captureID: capture.id,
-                sourceType: extracted.type == .pdfPage ? .pdf : .image,
+                sourceType: sourceType(for: extracted.type),
                 sourceURL: url.path
             )
             loadSelectedBookCollections()
+            allCaptures = try database.loadAllCaptures()
             return await aiService.quoteCandidates(from: extracted.text, chapters: chapters)
         } catch {
             statusMessage = error.localizedDescription
@@ -412,6 +438,7 @@ final class NavReadStore: ObservableObject {
             try database.insert(capture: capture)
             lastCandidateSource = CandidateSource(captureID: capture.id, sourceType: .web, sourceURL: rawURL)
             loadSelectedBookCollections()
+            allCaptures = try database.loadAllCaptures()
             return await aiService.quoteCandidates(from: text, chapters: chapters)
         } catch {
             statusMessage = error.localizedDescription
@@ -498,8 +525,14 @@ final class NavReadStore: ObservableObject {
             sourceURL: url.path,
             createdAt: .now
         )
-        try database.insert(capture: capture)
+        do {
+            try database.insert(capture: capture)
+        } catch {
+            deleteLocalAsset(path: extracted.assetPath)
+            throw error
+        }
         loadSelectedBookCollections()
+        allCaptures = try database.loadAllCaptures()
 
         return AIAttachment(
             kind: attachmentKind(for: extracted.type),
@@ -535,6 +568,7 @@ final class NavReadStore: ObservableObject {
         )
         try database.insert(capture: capture)
         loadSelectedBookCollections()
+        allCaptures = try database.loadAllCaptures()
 
         return AIAttachment(
             kind: .web,
@@ -555,23 +589,25 @@ final class NavReadStore: ObservableObject {
         guard !cleaned.isEmpty else {
             throw AIError.message("Dropped text was empty.")
         }
+        let boundedText = String(cleaned.prefix(CaptureImportPolicy.maxExtractedCharacters))
         let capture = Capture(
             id: UUID(),
             bookID: book.id,
             chapterID: selectedChapterID,
             type: .manualText,
-            rawText: cleaned,
+            rawText: boundedText,
             assetPath: nil,
             sourceURL: "",
             createdAt: .now
         )
         try database.insert(capture: capture)
         loadSelectedBookCollections()
+        allCaptures = try database.loadAllCaptures()
 
         return AIAttachment(
             kind: .text,
             name: name,
-            extractedText: cleaned,
+            extractedText: boundedText,
             sourceURL: "",
             assetPath: nil,
             captureID: capture.id,
@@ -580,6 +616,7 @@ final class NavReadStore: ObservableObject {
     }
 
     func startCodexLogin() async {
+        guard !authState.pending else { return }
         authState.pending = true
         authState.statusMessage = "Listening on localhost:1455..."
         do {
@@ -587,6 +624,7 @@ final class NavReadStore: ObservableObject {
             authState.statusMessage = "Opening Codex sign-in..."
             NSWorkspace.shared.open(url)
         } catch {
+            authState.authenticated = false
             authState.pending = false
             authState.statusMessage = error.localizedDescription
         }
@@ -600,6 +638,8 @@ final class NavReadStore: ObservableObject {
             authState.accountID = credentials.accountID
             authState.statusMessage = "Codex connected"
         } catch {
+            authState.authenticated = false
+            authState.pending = false
             authState.statusMessage = error.localizedDescription
         }
     }
@@ -820,6 +860,7 @@ final class NavReadStore: ObservableObject {
             quotes = []
             captures = []
             allQuotes = (try? database.loadAllQuotes()) ?? []
+            allCaptures = (try? database.loadAllCaptures()) ?? []
             return
         }
         do {
@@ -827,6 +868,7 @@ final class NavReadStore: ObservableObject {
             quotes = try database.loadQuotes(bookID: bookID)
             captures = try database.loadCaptures(bookID: bookID)
             allQuotes = try database.loadAllQuotes()
+            allCaptures = try database.loadAllCaptures()
             if selectedChapterID == nil || chapters.contains(where: { $0.id == selectedChapterID }) == false {
                 selectedChapterID = chapters.first?.id
             }
@@ -940,6 +982,21 @@ final class NavReadStore: ObservableObject {
         }
     }
 
+    private func sourceType(for type: CaptureType) -> SourceType {
+        switch type {
+        case .pdfPage:
+            .pdf
+        case .imageFile:
+            .image
+        case .screenshot:
+            .screenshot
+        case .webURL:
+            .web
+        case .manualText:
+            .manual
+        }
+    }
+
     private func socialShareText(quote: Quote, book: Book) -> String {
         var parts = ["\"\(quote.text)\"", "\(book.displayTitle) - \(book.displayAuthor)"]
         if !quote.pageLocator.isEmpty {
@@ -980,6 +1037,14 @@ final class NavReadStore: ObservableObject {
         let url = URL(fileURLWithPath: path)
         guard url.path.hasPrefix(LibraryPaths.assets.path) else { return }
         try? FileManager.default.removeItem(at: url)
+    }
+
+    private func deleteQuoteCardAssets(for quoteID: UUID) {
+        let prefix = quoteID.uuidString
+        guard let files = try? FileManager.default.contentsOfDirectory(at: LibraryPaths.cards, includingPropertiesForKeys: nil) else { return }
+        for url in files where url.lastPathComponent.hasPrefix(prefix) {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 }
 

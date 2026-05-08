@@ -28,7 +28,7 @@ struct FirstRunOnboardingView: View {
         case .books:
             (!enteredBooks.isEmpty || !store.books.isEmpty) && !isAddingBooks
         case .codex:
-            store.authState.authenticated
+            !store.authState.pending
         }
     }
 
@@ -154,13 +154,18 @@ struct FirstRunOnboardingView: View {
                     .lineSpacing(2)
             }
 
-            VStack(spacing: 10) {
-                ForEach($starterBooks) { $book in
-                    StarterBookRow(book: $book, removable: starterBooks.count > 1) {
-                        starterBooks.removeAll { $0.id == book.id }
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach($starterBooks) { $book in
+                        StarterBookRow(book: $book, removable: starterBooks.count > 1) {
+                            starterBooks.removeAll { $0.id == book.id }
+                        }
                     }
                 }
+                .padding(.trailing, 4)
             }
+            .frame(maxHeight: 210)
+            .scrollIndicators(.visible)
 
             Button {
                 starterBooks.append(StarterBookInput(title: "", author: ""))
@@ -168,7 +173,7 @@ struct FirstRunOnboardingView: View {
                 Label("Add another book", systemImage: "plus")
             }
             .buttonStyle(GhostButtonStyle())
-            .disabled(isAddingBooks)
+            .disabled(isAddingBooks || starterBooks.count >= 8)
 
             if isAddingBooks || !addProgress.isEmpty {
                 HStack(spacing: 10) {
@@ -193,7 +198,7 @@ struct FirstRunOnboardingView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Connect Codex.")
                     .font(.system(size: 30, weight: .bold, design: .serif))
-                Text("Required for AI chapter scaffolds, capture classification, quote cleanup, and chat. Core library storage remains local.")
+                Text("Connect now for AI chapter scaffolds, capture classification, quote cleanup, and chat. You can also finish setup and connect later from Settings.")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .lineSpacing(2)
@@ -311,7 +316,7 @@ struct FirstRunOnboardingView: View {
             if isAddingBooks { return "Adding..." }
             return enteredBooks.isEmpty ? "Continue" : "Add Books"
         case .codex:
-            return "Finish Setup"
+            return store.authState.authenticated ? "Finish Setup" : "Finish Without Codex"
         }
     }
 

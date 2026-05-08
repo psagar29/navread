@@ -180,27 +180,34 @@ final class SQLiteDatabase {
         }
     }
 
+    func loadAllCaptures() throws -> [Capture] {
+        try rows("SELECT * FROM captures ORDER BY created_at DESC") { statement in
+            Self.mapCapture(statement)
+        }
+    }
+
     func loadCaptures(bookID: UUID) throws -> [Capture] {
         try rows("SELECT * FROM captures WHERE book_id = ? ORDER BY created_at DESC", [bookID.uuidString]) { statement in
-            Capture(
-                id: uuid(statement, 0),
-                bookID: uuid(statement, 1),
-                chapterID: nullableUUID(statement, 2),
-                type: CaptureType(rawValue: text(statement, 3)) ?? .manualText,
-                rawText: text(statement, 4),
-                assetPath: nullableText(statement, 5),
-                sourceURL: text(statement, 6),
-                createdAt: date(statement, 7)
-            )
+            Self.mapCapture(statement)
         }
     }
 
     func insert(book: Book) throws {
         try run(
             """
-            INSERT OR REPLACE INTO books
+            INSERT INTO books
             (id, title, nickname, author, isbn, summary, cover_asset_path, dominant_hex, metadata_source, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              title = excluded.title,
+              nickname = excluded.nickname,
+              author = excluded.author,
+              isbn = excluded.isbn,
+              summary = excluded.summary,
+              cover_asset_path = excluded.cover_asset_path,
+              dominant_hex = excluded.dominant_hex,
+              metadata_source = excluded.metadata_source,
+              updated_at = excluded.updated_at
             """,
             [
                 book.id.uuidString, book.title, book.nickname, book.author, book.isbn, book.summary, book.coverAssetPath as Any,
@@ -212,9 +219,18 @@ final class SQLiteDatabase {
     func insert(chapter: Chapter) throws {
         try run(
             """
-            INSERT OR REPLACE INTO chapters
+            INSERT INTO chapters
             (id, book_id, title, order_index, summary, page_start, page_end, ai_generated, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              book_id = excluded.book_id,
+              title = excluded.title,
+              order_index = excluded.order_index,
+              summary = excluded.summary,
+              page_start = excluded.page_start,
+              page_end = excluded.page_end,
+              ai_generated = excluded.ai_generated,
+              updated_at = excluded.updated_at
             """,
             [
                 chapter.id.uuidString, chapter.bookID.uuidString, chapter.title, chapter.orderIndex,
@@ -228,9 +244,21 @@ final class SQLiteDatabase {
         let tags = try String(data: encoder.encode(quote.tags), encoding: .utf8) ?? "[]"
         try run(
             """
-            INSERT OR REPLACE INTO quotes
+            INSERT INTO quotes
             (id, book_id, chapter_id, raw_text, cleaned_text, page_locator, note, tags_json, source_type, source_url, capture_id, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              book_id = excluded.book_id,
+              chapter_id = excluded.chapter_id,
+              raw_text = excluded.raw_text,
+              cleaned_text = excluded.cleaned_text,
+              page_locator = excluded.page_locator,
+              note = excluded.note,
+              tags_json = excluded.tags_json,
+              source_type = excluded.source_type,
+              source_url = excluded.source_url,
+              capture_id = excluded.capture_id,
+              updated_at = excluded.updated_at
             """,
             [
                 quote.id.uuidString, quote.bookID.uuidString, quote.chapterID?.uuidString as Any,
@@ -243,9 +271,17 @@ final class SQLiteDatabase {
     func insert(capture: Capture) throws {
         try run(
             """
-            INSERT OR REPLACE INTO captures
+            INSERT INTO captures
             (id, book_id, chapter_id, type, raw_text, asset_path, source_url, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              book_id = excluded.book_id,
+              chapter_id = excluded.chapter_id,
+              type = excluded.type,
+              raw_text = excluded.raw_text,
+              asset_path = excluded.asset_path,
+              source_url = excluded.source_url,
+              created_at = excluded.created_at
             """,
             [
                 capture.id.uuidString, capture.bookID.uuidString, capture.chapterID?.uuidString as Any,
@@ -286,6 +322,17 @@ final class SQLiteDatabase {
         try run("DELETE FROM quotes WHERE id = ?", [id.uuidString])
     }
 
+    func transaction(_ work: () throws -> Void) throws {
+        try run("BEGIN IMMEDIATE TRANSACTION")
+        do {
+            try work()
+            try run("COMMIT")
+        } catch {
+            try? run("ROLLBACK")
+            throw error
+        }
+    }
+
     func run(_ sql: String, _ values: [Any] = []) throws {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -307,8 +354,13 @@ final class SQLiteDatabase {
         try bind(values, to: statement)
 
         var output: [T] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
+        var result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
             output.append(try map(statement))
+            result = sqlite3_step(statement)
+        }
+        guard result == SQLITE_DONE else {
+            throw SQLiteError.step(lastError)
         }
         return output
     }
@@ -342,6 +394,19 @@ final class SQLiteDatabase {
             captureID: nullableUUID(statement, 10),
             createdAt: date(statement, 11),
             updatedAt: date(statement, 12)
+        )
+    }
+
+    private static func mapCapture(_ statement: OpaquePointer?) -> Capture {
+        Capture(
+            id: uuid(statement, 0),
+            bookID: uuid(statement, 1),
+            chapterID: nullableUUID(statement, 2),
+            type: CaptureType(rawValue: text(statement, 3)) ?? .manualText,
+            rawText: text(statement, 4),
+            assetPath: nullableText(statement, 5),
+            sourceURL: text(statement, 6),
+            createdAt: date(statement, 7)
         )
     }
 

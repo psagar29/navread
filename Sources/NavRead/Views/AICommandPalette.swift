@@ -166,7 +166,7 @@ struct AICommandPalette: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(AIQuickActionButtonStyle(accent: accent))
-                .disabled(working)
+                .disabled(working || importingAttachment)
                 .help(action.prompt)
             }
         }
@@ -185,7 +185,7 @@ struct AICommandPalette: View {
                         Label("Attach Link", systemImage: "plus")
                     }
                     .buttonStyle(PrimaryButtonStyle())
-                    .disabled(linkInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || importingAttachment || attachments.count >= AIAttachmentPolicy.maxItems)
+                    .disabled(!canAttachLink)
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -322,9 +322,16 @@ struct AICommandPalette: View {
         return working ? Color.primary.opacity(0.28) : Color.primary.opacity(0.10)
     }
 
+    private var canAttachLink: Bool {
+        !linkInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !working
+            && !importingAttachment
+            && attachments.count < AIAttachmentPolicy.maxItems
+    }
+
     private func run() {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !working else { return }
+        guard !trimmed.isEmpty, !working, !importingAttachment else { return }
 
         let history = conversationHistory
         let activeAttachments = attachments
@@ -487,7 +494,7 @@ struct AICommandPalette: View {
 
     private func addLinkAttachment() {
         let value = linkInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty, attachments.count < AIAttachmentPolicy.maxItems else { return }
+        guard canAttachLink else { return }
         importingAttachment = true
         attachmentError = ""
         Task {

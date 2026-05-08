@@ -204,10 +204,12 @@ struct CaptureSheet: View {
 
             HStack(spacing: 10) {
                 Button {
-                    cleanedText = rawText
+                    guard store.selectedBook != nil else { return }
+                    let savedText = rawText
+                    cleanedText = savedText
                     store.addManualQuote(
-                        rawText: rawText,
-                        cleanedText: cleanedText,
+                        rawText: savedText,
+                        cleanedText: savedText,
                         pageLocator: pageLocator,
                         note: note,
                         tags: classifiedTags
@@ -217,7 +219,7 @@ struct CaptureSheet: View {
                     Label("Save Exact", systemImage: "text.quote")
                 }
                 .buttonStyle(LiquidButtonStyle())
-                .disabled(rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.selectedBook == nil)
 
                 Button {
                     Task {
@@ -231,7 +233,7 @@ struct CaptureSheet: View {
                     Label("Classify + Extract", systemImage: "brain.head.profile")
                 }
                 .buttonStyle(PrimaryButtonStyle())
-                .disabled(rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.selectedBook == nil)
             }
         }
     }

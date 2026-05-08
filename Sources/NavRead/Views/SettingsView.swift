@@ -44,7 +44,7 @@ struct SettingsView: View {
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                                 Spacer(minLength: 20)
-                                Button(store.authState.authenticated ? "Disconnect" : "Sign In") {
+                                Button(settingsAuthButtonTitle) {
                                     Task {
                                         if store.authState.authenticated {
                                             store.signOutCodex()
@@ -54,6 +54,7 @@ struct SettingsView: View {
                                     }
                                 }
                                 .buttonStyle(LiquidButtonStyle())
+                                .disabled(store.authState.pending)
                             }
 
                             DisclosureGroup("Manual callback fallback") {
@@ -111,6 +112,13 @@ struct SettingsView: View {
         }
         .frame(minWidth: 560, idealWidth: 560, maxWidth: 560, minHeight: 420, idealHeight: 500, maxHeight: 620)
         .background(.regularMaterial)
+    }
+}
+
+private extension SettingsView {
+    var settingsAuthButtonTitle: String {
+        if store.authState.pending { return "Opening..." }
+        return store.authState.authenticated ? "Disconnect" : "Sign In"
     }
 }
 

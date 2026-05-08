@@ -147,6 +147,21 @@ Other commands:
 ./script/build_and_run.sh --telemetry
 ```
 
+Create a release DMG:
+
+```bash
+./script/package_release.sh
+```
+
+For a signed and notarized public build, install a **Developer ID Application** certificate and save Apple notarization credentials with `notarytool`, then run:
+
+```bash
+SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+NOTARY_KEYCHAIN_PROFILE="navread-notary" \
+REQUIRE_NOTARIZATION=1 \
+./script/package_release.sh
+```
+
 Project structure:
 
 ```text

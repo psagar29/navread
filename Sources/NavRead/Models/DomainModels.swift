@@ -242,6 +242,14 @@ enum AIAttachmentPolicy {
     static let maxItems = 5
 }
 
+enum CaptureImportPolicy {
+    static let maxFileBytes = 25 * 1024 * 1024
+    static let maxWebBytes = 4 * 1024 * 1024
+    static let maxPDFPages = 40
+    static let maxImagePixels = 24_000_000
+    static let maxExtractedCharacters = 80_000
+}
+
 extension Book {
     static let sample = Book(
         id: UUID(),

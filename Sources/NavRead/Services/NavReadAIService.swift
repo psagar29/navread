@@ -53,6 +53,28 @@ actor CodexOAuthService {
         return try await exchange(code: code, verifier: TokenVault.shared.pendingVerifier)
     }
 
+    func validCredentials(skew: TimeInterval = 120) async throws -> CodexCredentials {
+        guard let credentials = TokenVault.shared.load() else {
+            throw AIError.notAuthenticated
+        }
+        if credentials.expiresAt > Date().addingTimeInterval(skew) {
+            return credentials
+        }
+        guard !credentials.refresh.isEmpty else {
+            TokenVault.shared.clear()
+            throw AIError.notAuthenticated
+        }
+        return try await refresh(refreshToken: credentials.refresh, existingAccountID: credentials.accountID)
+    }
+
+    func refreshStoredCredentials() async throws -> CodexCredentials {
+        guard let credentials = TokenVault.shared.load(), !credentials.refresh.isEmpty else {
+            TokenVault.shared.clear()
+            throw AIError.notAuthenticated
+        }
+        return try await refresh(refreshToken: credentials.refresh, existingAccountID: credentials.accountID)
+    }
+
     private func startCallbackServer() async throws {
         callbackServer?.stop()
         let server = try LocalOAuthCallbackServer { code, state in
@@ -120,9 +142,42 @@ actor CodexOAuthService {
         }
         let credentials = CodexCredentials(
             access: payload.accessToken,
-            refresh: payload.refreshToken,
+            refresh: payload.refreshToken ?? "",
             expiresAt: Date().addingTimeInterval(TimeInterval(payload.expiresIn)),
             accountID: Self.accountID(from: payload.accessToken) ?? ""
+        )
+        try TokenVault.shared.save(credentials)
+        return credentials
+    }
+
+    private func refresh(refreshToken: String, existingAccountID: String) async throws -> CodexCredentials {
+        var request = URLRequest(url: tokenURL)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = formURLEncoded([
+            "grant_type": "refresh_token",
+            "client_id": clientID,
+            "refresh_token": refreshToken
+        ]).data(using: .utf8)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let message = Self.oauthErrorMessage(from: data, statusCode: http.statusCode)
+            if message.localizedCaseInsensitiveContains("invalid_grant") {
+                TokenVault.shared.clear()
+            }
+            throw AIError.message(message)
+        }
+        let payload: TokenResponse
+        do {
+            payload = try JSONDecoder().decode(TokenResponse.self, from: data)
+        } catch {
+            throw AIError.message(Self.oauthErrorMessage(from: data, statusCode: nil))
+        }
+        let credentials = CodexCredentials(
+            access: payload.accessToken,
+            refresh: payload.refreshToken ?? refreshToken,
+            expiresAt: Date().addingTimeInterval(TimeInterval(payload.expiresIn)),
+            accountID: Self.accountID(from: payload.accessToken) ?? existingAccountID
         )
         try TokenVault.shared.save(credentials)
         return credentials
@@ -198,6 +253,12 @@ struct OAuthCallbackResult: Sendable {
     var message: String
 }
 
+private enum OAuthCallbackParseResult {
+    case success(code: String, state: String?)
+    case oauthError(String)
+    case notCallback
+}
+
 final class LocalOAuthCallbackServer: @unchecked Sendable {
     typealias Handler = @Sendable (_ code: String, _ state: String?) async -> OAuthCallbackResult
 
@@ -211,7 +272,6 @@ final class LocalOAuthCallbackServer: @unchecked Sendable {
     init(port: UInt16 = 1455, handler: @escaping Handler) throws {
         self.handler = handler
         let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw AIError.message("Invalid OAuth callback port.")
         }
@@ -290,37 +350,54 @@ final class LocalOAuthCallbackServer: @unchecked Sendable {
                 return
             }
             let request = String(decoding: data ?? Data(), as: UTF8.self)
-            guard let callback = self.parseCallback(from: request) else {
+            switch self.parseCallback(from: request) {
+            case .success(let code, let state):
+                Task {
+                    let result = await self.handler(code, state)
+                    self.send(
+                        status: result.success ? 200 : 500,
+                        body: self.html(title: "NavRead Codex", message: result.message, success: result.success),
+                        on: connection
+                    )
+                }
+            case .oauthError(let message):
+                self.stop()
+                Task { @MainActor in
+                    NotificationCenter.default.post(
+                        name: .navReadCodexAuthFailed,
+                        object: nil,
+                        userInfo: ["message": message]
+                    )
+                }
+                self.send(status: 400, body: self.html(title: "NavRead Codex", message: message, success: false), on: connection)
+            case .notCallback:
                 self.send(status: 404, body: self.html(title: "NavRead Codex", message: "Callback route not found.", success: false), on: connection)
-                return
-            }
-            Task {
-                let result = await self.handler(callback.code, callback.state)
-                self.send(
-                    status: result.success ? 200 : 500,
-                    body: self.html(title: "NavRead Codex", message: result.message, success: result.success),
-                    on: connection
-                )
             }
         }
     }
 
-    private func parseCallback(from request: String) -> (code: String, state: String?)? {
-        guard let firstLine = request.components(separatedBy: "\r\n").first else { return nil }
+    private func parseCallback(from request: String) -> OAuthCallbackParseResult {
+        guard let firstLine = request.components(separatedBy: "\r\n").first else { return .notCallback }
         let parts = firstLine.split(separator: " ")
-        guard parts.count >= 2 else { return nil }
+        guard parts.count >= 2 else { return .notCallback }
         let path = String(parts[1])
         guard let components = URLComponents(string: "http://localhost:1455\(path)"),
-              components.path == "/auth/callback",
-              let code = components.queryItems?.first(where: { $0.name == "code" })?.value else {
-            return nil
+              components.path == "/auth/callback" else {
+            return .notCallback
+        }
+        if let error = components.queryItems?.first(where: { $0.name == "error_description" })?.value
+            ?? components.queryItems?.first(where: { $0.name == "error" })?.value {
+            return .oauthError("Codex sign-in failed: \(error)")
+        }
+        guard let code = components.queryItems?.first(where: { $0.name == "code" })?.value else {
+            return .oauthError("Codex sign-in did not return an authorization code.")
         }
         let state = components.queryItems?.first(where: { $0.name == "state" })?.value
-        return (code, state)
+        return .success(code: code, state: state)
     }
 
     private func send(status: Int, body: String, on connection: NWConnection) {
-        let reason = status == 200 ? "OK" : status == 404 ? "Not Found" : "Internal Server Error"
+        let reason = status == 200 ? "OK" : status == 400 ? "Bad Request" : status == 404 ? "Not Found" : "Internal Server Error"
         let data = Data(body.utf8)
         let response = """
         HTTP/1.1 \(status) \(reason)\r
@@ -527,70 +604,80 @@ actor NavReadAIService {
     }
 
     private nonisolated func codexTextStream(systemPrompt: String, userPrompt: String) -> AsyncThrowingStream<String, Error> {
-        guard let credentials = TokenVault.shared.load() else {
-            return AsyncThrowingStream { continuation in
-                continuation.finish(throwing: AIError.notAuthenticated)
-            }
-        }
         let responseURL = Self.responseURL
-        let model = model
+        let modelName = model
         return AsyncThrowingStream { continuation in
             Task {
                 do {
-                    var request = URLRequest(url: responseURL)
-                    request.httpMethod = "POST"
-                    request.setValue("Bearer \(credentials.access)", forHTTPHeaderField: "Authorization")
-                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.setValue("responses=experimental", forHTTPHeaderField: "OpenAI-Beta")
-                    request.setValue("text/event-stream", forHTTPHeaderField: "accept")
-                    request.setValue("pi", forHTTPHeaderField: "originator")
-                    if !credentials.accountID.isEmpty {
-                        request.setValue(credentials.accountID, forHTTPHeaderField: "chatgpt-account-id")
-                    }
-                    let body: [String: Any] = [
-                        "model": model,
-                        "store": false,
-                        "stream": true,
-                        "instructions": systemPrompt,
-                        "input": [["role": "user", "content": userPrompt]],
-                        "text": ["verbosity": "medium"],
-                        "include": ["reasoning.encrypted_content"],
-                        "tool_choice": "auto",
-                        "parallel_tool_calls": true,
-                        "reasoning": ["effort": "medium", "summary": "auto"]
-                    ]
-                    request.httpBody = try JSONSerialization.data(withJSONObject: body)
-                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
-                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                        throw AIError.message("Codex response failed with HTTP \(http.statusCode).")
-                    }
-                    var didStream = false
-                    var finalText = ""
-                    for try await line in bytes.lines {
-                        guard line.hasPrefix("data:") else { continue }
-                        let raw = String(line.dropFirst(5)).trimmingCharacters(in: .whitespacesAndNewlines)
-                        if raw == "[DONE]" { break }
-                        guard let data = raw.data(using: .utf8),
-                              let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                            continue
+                    let oauth = CodexOAuthService()
+                    var credentials = try await oauth.validCredentials()
+                    var didRetryAfterUnauthorized = false
+
+                    retryLoop: while true {
+                        var request = URLRequest(url: responseURL)
+                        request.httpMethod = "POST"
+                        request.setValue("Bearer \(credentials.access)", forHTTPHeaderField: "Authorization")
+                        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                        request.setValue("responses=experimental", forHTTPHeaderField: "OpenAI-Beta")
+                        request.setValue("text/event-stream", forHTTPHeaderField: "accept")
+                        request.setValue("pi", forHTTPHeaderField: "originator")
+                        if !credentials.accountID.isEmpty {
+                            request.setValue(credentials.accountID, forHTTPHeaderField: "chatgpt-account-id")
                         }
-                        let type = event["type"] as? String
-                        if type == "response.output_text.delta", let delta = event["delta"] as? String {
-                            didStream = true
-                            continuation.yield(delta)
-                        } else if type == "response.completed", let response = event["response"] as? [String: Any] {
-                            finalText = Self.extractText(from: response)
-                        } else if type == "error" {
-                            throw AIError.message((event["message"] as? String) ?? "Codex response error.")
+                        let body: [String: Any] = [
+                            "model": modelName,
+                            "store": false,
+                            "stream": true,
+                            "instructions": systemPrompt,
+                            "input": [["role": "user", "content": userPrompt]],
+                            "text": ["verbosity": "medium"],
+                            "include": ["reasoning.encrypted_content"],
+                            "tool_choice": "auto",
+                            "parallel_tool_calls": true,
+                            "reasoning": ["effort": "medium", "summary": "auto"]
+                        ]
+                        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                            if http.statusCode == 401, !didRetryAfterUnauthorized {
+                                didRetryAfterUnauthorized = true
+                                credentials = try await oauth.refreshStoredCredentials()
+                                continue retryLoop
+                            }
+                            throw AIError.message("Codex response failed with HTTP \(http.statusCode).")
                         }
-                    }
-                    if !didStream {
-                        let fallback = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !fallback.isEmpty {
-                            continuation.yield(fallback)
+
+                        var didStream = false
+                        var finalText = ""
+                        for try await line in bytes.lines {
+                            guard line.hasPrefix("data:") else { continue }
+                            let raw = String(line.dropFirst(5)).trimmingCharacters(in: .whitespacesAndNewlines)
+                            if raw == "[DONE]" { break }
+                            guard let data = raw.data(using: .utf8),
+                                  let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                                continue
+                            }
+                            let type = event["type"] as? String
+                            if type == "response.output_text.delta", let delta = event["delta"] as? String {
+                                didStream = true
+                                continuation.yield(delta)
+                            } else if type == "response.completed", let response = event["response"] as? [String: Any] {
+                                finalText = Self.extractText(from: response)
+                            } else if type == "response.failed" || type == "response.incomplete" {
+                                throw AIError.message(Self.extractErrorMessage(from: event) ?? "Codex response did not complete.")
+                            } else if type == "error" {
+                                throw AIError.message(Self.extractErrorMessage(from: event) ?? "Codex response error.")
+                            }
                         }
+                        if !didStream {
+                            let fallback = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !fallback.isEmpty {
+                                continuation.yield(fallback)
+                            }
+                        }
+                        continuation.finish()
+                        break retryLoop
                     }
-                    continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -701,6 +788,24 @@ actor NavReadAIService {
             .joined(separator: "\n")
     }
 
+    private static func extractErrorMessage(from payload: [String: Any]) -> String? {
+        if let message = payload["message"] as? String, !message.isEmpty {
+            return message
+        }
+        if let error = payload["error"] as? [String: Any],
+           let message = error["message"] as? String,
+           !message.isEmpty {
+            return message
+        }
+        if let response = payload["response"] as? [String: Any],
+           let error = response["error"] as? [String: Any],
+           let message = error["message"] as? String,
+           !message.isEmpty {
+            return message
+        }
+        return nil
+    }
+
     private func suggestedTags(for text: String) -> [String] {
         let lower = text.lowercased()
         var tags: [String] = []
@@ -758,7 +863,7 @@ struct CodexCredentials: Codable {
 
 private struct TokenResponse: Decodable {
     var accessToken: String
-    var refreshToken: String
+    var refreshToken: String?
     var expiresIn: Int
 
     enum CodingKeys: String, CodingKey {
