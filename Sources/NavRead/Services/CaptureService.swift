@@ -222,10 +222,18 @@ enum ExportService {
     static func markdown(book: Book, chapters: [Chapter], quotes: [Quote]) -> String {
         var output = "# \(book.title)\n\n"
         if !book.author.isEmpty { output += "_\(book.author)_\n\n" }
-        output += "\(book.summary)\n\n"
+        if !book.summary.isEmpty {
+            output += "\(book.summary)\n\n"
+        }
+        if !book.learnings.isEmpty {
+            output += "## Book Learnings\n\n\(book.learnings)\n\n"
+        }
         var exportedQuoteIDs = Set<UUID>()
         for chapter in chapters {
             output += "## \(chapter.title)\n\n"
+            if !chapter.learnings.isEmpty {
+                output += "### Chapter Learnings\n\n\(chapter.learnings)\n\n"
+            }
             let chapterQuotes = quotes.filter { $0.chapterID == chapter.id }
             for quote in chapterQuotes {
                 exportedQuoteIDs.insert(quote.id)

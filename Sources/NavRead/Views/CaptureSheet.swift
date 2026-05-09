@@ -193,7 +193,7 @@ struct CaptureSheet: View {
                     )
 
                 if rawText.isEmpty {
-                    Text("Paste a paragraph, screenshot OCR text, or exact quote...")
+                    Text("Paste a quote, passage, note, idea, question, or code snippet...")
                         .foregroundStyle(.tertiary)
                         .font(.system(size: 15, design: .serif))
                         .padding(.horizontal, 18)
@@ -216,7 +216,7 @@ struct CaptureSheet: View {
                     )
                     dismiss()
                 } label: {
-                    Label("Save Exact", systemImage: "text.quote")
+                    Label("Save Quote", systemImage: "checkmark")
                 }
                 .buttonStyle(LiquidButtonStyle())
                 .disabled(rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.selectedBook == nil)
@@ -370,7 +370,7 @@ struct CandidateList: View {
     var body: some View {
         if !candidates.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                SectionHeader(title: "AI Candidates", subtitle: "\(candidates.count) found", icon: "brain.head.profile")
+                SectionHeader(title: "AI Suggestions", subtitle: "\(candidates.count) found", icon: "brain.head.profile")
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {

@@ -69,7 +69,9 @@ if [ -n "$SIGN_IDENTITY" ]; then
   codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$BUNDLE_DIR"
   codesign --verify --deep --strict --verbose=2 "$BUNDLE_DIR"
 else
-  echo "warning: no Developer ID Application signing identity found; app and DMG will not be notarization-ready" >&2
+  echo "warning: no Developer ID Application signing identity found; using ad-hoc local signing" >&2
+  codesign --force --deep --sign - "$BUNDLE_DIR"
+  codesign --verify --deep --strict --verbose=2 "$BUNDLE_DIR"
   if [ "$REQUIRE_NOTARIZATION" = "1" ]; then
     echo "error: REQUIRE_NOTARIZATION=1 but SIGN_IDENTITY is missing" >&2
     exit 1
@@ -82,6 +84,9 @@ cp "$DMG_PATH" "$VERSIONED_DMG_PATH"
 if [ -n "$SIGN_IDENTITY" ]; then
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$VERSIONED_DMG_PATH"
+else
+  codesign --force --sign - "$DMG_PATH" || true
+  codesign --force --sign - "$VERSIONED_DMG_PATH" || true
 fi
 
 if [ -n "$NOTARY_KEYCHAIN_PROFILE" ]; then

@@ -72,6 +72,19 @@ enum QuoteCardRenderer {
         }
     }
 
+    static func render(savedQuote: SavedQuote, format: QuoteCardFormat) -> URL? {
+        do {
+            try LibraryPaths.ensure()
+            let image = drawCard(savedQuote: savedQuote, format: format)
+            guard let png = pngData(from: image) else { return nil }
+            let url = LibraryPaths.cards.appendingPathComponent("saved-\(savedQuote.id.uuidString)-\(format.rawValue).png")
+            try png.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
     private static func drawCard(quote: Quote, book: Book, format: QuoteCardFormat) -> NSImage {
         let size = format.size
         let image = NSImage(size: size)
@@ -122,6 +135,71 @@ enum QuoteCardRenderer {
         ]
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .joined(separator: " / ")
+        draw(
+            text: meta,
+            in: NSRect(x: inner.minX, y: inner.minY + inner.height * 0.16, width: inner.width * 0.78, height: 80),
+            font: .systemFont(ofSize: size.width * 0.026, weight: .semibold),
+            color: NSColor.black.withAlphaComponent(0.78),
+            alignment: .left,
+            lineHeight: size.width * 0.035
+        )
+
+        draw(
+            text: "Saved with NavRead",
+            in: NSRect(x: inner.minX, y: inner.minY, width: inner.width, height: 48),
+            font: .systemFont(ofSize: size.width * 0.018, weight: .medium),
+            color: NSColor.black.withAlphaComponent(0.48),
+            alignment: .left,
+            lineHeight: size.width * 0.024
+        )
+
+        return image
+    }
+
+    private static func drawCard(savedQuote: SavedQuote, format: QuoteCardFormat) -> NSImage {
+        let size = format.size
+        let image = NSImage(size: size)
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        NSColor.black.setFill()
+        NSRect(origin: .zero, size: size).fill()
+
+        let inset = size.width * 0.07
+        let cardRect = NSRect(
+            x: inset,
+            y: inset,
+            width: size.width - inset * 2,
+            height: size.height - inset * 2
+        )
+        let radius = size.width * 0.045
+        let path = NSBezierPath(roundedRect: cardRect, xRadius: radius, yRadius: radius)
+        NSColor(white: 0.965, alpha: 1).setFill()
+        path.fill()
+        NSColor(white: 0, alpha: 0.14).setStroke()
+        path.lineWidth = 2
+        path.stroke()
+
+        let inner = cardRect.insetBy(dx: size.width * 0.06, dy: size.width * 0.06)
+        drawBrand(in: inner, size: size)
+
+        let quoteFontSize = fontSize(for: savedQuote.text, format: format)
+        let quoteRect = NSRect(
+            x: inner.minX,
+            y: inner.minY + inner.height * 0.32,
+            width: inner.width,
+            height: inner.height * 0.48
+        )
+        draw(
+            text: savedQuote.text.quoted,
+            in: quoteRect,
+            font: NSFont(descriptor: NSFontDescriptor.preferredFontDescriptor(forTextStyle: .title1).withDesign(.serif) ?? NSFontDescriptor(), size: quoteFontSize) ?? .systemFont(ofSize: quoteFontSize, weight: .semibold),
+            color: .black,
+            alignment: .left,
+            lineHeight: quoteFontSize * 1.18
+        )
+
+        let meta = savedQuote.attribution
         draw(
             text: meta,
             in: NSRect(x: inner.minX, y: inner.minY + inner.height * 0.16, width: inner.width * 0.78, height: 80),

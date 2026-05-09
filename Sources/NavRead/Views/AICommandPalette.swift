@@ -26,7 +26,8 @@ struct AICommandPalette: View {
     private var scopeLabel: String {
         if store.selectedQuote != nil { return "quote" }
         if store.selectedChapter != nil { return "chapter" }
-        return "book"
+        if store.selectedBook != nil { return "book" }
+        return "quotes"
     }
 
     private var conversationHistory: String {
@@ -623,13 +624,13 @@ private enum AIQuickAction: String, CaseIterable, Identifiable {
         case .explain:
             "Explain the selected scope in clear language. Separate library-backed facts from your interpretation."
         case .extract:
-            "Extract the best quote candidates from the selected scope. Include suggested chapter, tags, and why each is worth saving."
+            "Extract the best quote candidates from the selected scope. Include suggested chapter, tags, and why each is worth keeping."
         case .cleanOCR:
             "Clean OCR or messy pasted text from the selected scope. Preserve wording where possible and flag uncertain fixes."
         case .tags:
-            "Generate tight tags and a short note for the selected quote or chapter. Classify the content as quote, passage, idea, note, question, or code."
+            "Generate tight tags and a short note for the selected quote or chapter. Classify captured content as quote, passage, idea, note, question, or code."
         case .related:
-            "Find related saved quotes or chapters in this library and explain the connection."
+            "Find related quotes, standalone quotes, or chapters in this library and explain the connection."
         case .chapter:
             "Create editable chapter context: key ideas, likely quote themes, and capture suggestions for the current chapter."
         }
@@ -646,7 +647,7 @@ private struct AIEmptyStateView: View {
                 Text("Ask against the current book context.")
                     .font(.system(size: 15, weight: .semibold))
             }
-            Text("NavRead sends the selected book, chapter, quote, saved quotes, and recent captures as context when Codex is connected.")
+            Text("NavRead sends the selected book, chapter, book quotes, chapter learnings, book learnings, standalone quotes, and recent captures as context when Codex is connected.")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

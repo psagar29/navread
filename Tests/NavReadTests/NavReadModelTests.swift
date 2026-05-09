@@ -95,6 +95,7 @@ import Testing
         title: "Chapter One",
         orderIndex: 0,
         summary: "",
+        learnings: "",
         pageStart: nil,
         pageEnd: nil,
         aiGenerated: false,
@@ -128,6 +129,47 @@ import Testing
     #expect(try database.loadQuotes(bookID: book.id).count == 1)
 }
 
+@Test func savedQuoteRoundTripsAndDeletes() throws {
+    let database = try makeTemporaryDatabase()
+    let quote = SavedQuote(
+        id: UUID(),
+        text: "Attention is the beginning of devotion.",
+        author: "Mary Oliver",
+        source: "online",
+        note: "Standalone quote",
+        tags: ["attention", "devotion"],
+        createdAt: .now,
+        updatedAt: .now
+    )
+
+    try database.insert(savedQuote: quote)
+
+    let saved = try #require(database.loadSavedQuotes().first)
+    #expect(saved.text == quote.text)
+    #expect(saved.author == "Mary Oliver")
+    #expect(saved.tags == ["attention", "devotion"])
+
+    try database.deleteSavedQuote(quote.id)
+    #expect(try database.loadSavedQuotes().isEmpty)
+}
+
+@Test func bulkSavedQuoteImportParsesAttributionAndDeduplicates() async {
+    let service = NavReadAIService()
+    let paste = """
+    "We are what we repeatedly do. Excellence, then, is not an act, but a habit." - Aristotle
+    "The impediment to action advances action. What stands in the way becomes the way." - Marcus Aurelius, Meditations
+    "We are what we repeatedly do. Excellence, then, is not an act, but a habit." - Aristotle
+    """
+
+    let candidates = await service.savedQuoteCandidates(from: paste, preferCodex: false)
+
+    #expect(candidates.count == 2)
+    #expect(candidates.first?.text == "We are what we repeatedly do. Excellence, then, is not an act, but a habit.")
+    #expect(candidates.first?.author == "Aristotle")
+    #expect(candidates.last?.author == "Marcus Aurelius")
+    #expect(candidates.last?.source == "Meditations")
+}
+
 @Test func markdownExportIncludesUnassignedQuotes() {
     let book = Book.sample
     let chapter = Chapter(
@@ -136,6 +178,7 @@ import Testing
         title: "Chapter One",
         orderIndex: 0,
         summary: "",
+        learnings: "",
         pageStart: nil,
         pageEnd: nil,
         aiGenerated: false,
@@ -162,6 +205,45 @@ import Testing
 
     #expect(markdown.contains("## Unassigned"))
     #expect(markdown.contains("Unassigned quote"))
+}
+
+@Test func markdownExportIncludesBookLearnings() {
+    var book = Book.sample
+    book.learnings = "The core lesson is to build a daily creative practice."
+
+    let markdown = ExportService.markdown(book: book, chapters: [], quotes: [])
+
+    #expect(markdown.contains("## Book Learnings"))
+    #expect(markdown.contains(book.learnings))
+}
+
+@Test func chapterLearningsRoundTripAndExport() throws {
+    let database = try makeTemporaryDatabase()
+    var book = Book.sample
+    book.id = UUID()
+    let chapter = Chapter(
+        id: UUID(),
+        bookID: book.id,
+        title: "Attention",
+        orderIndex: 0,
+        summary: "A chapter about noticing.",
+        learnings: "Attention compounds into taste.",
+        pageStart: nil,
+        pageEnd: nil,
+        aiGenerated: false,
+        createdAt: .now,
+        updatedAt: .now
+    )
+
+    try database.insert(book: book)
+    try database.insert(chapter: chapter)
+
+    let saved = try #require(database.loadChapters(bookID: book.id).first)
+    #expect(saved.learnings == chapter.learnings)
+
+    let markdown = ExportService.markdown(book: book, chapters: [saved], quotes: [])
+    #expect(markdown.contains("### Chapter Learnings"))
+    #expect(markdown.contains(chapter.learnings))
 }
 
 private func makeTemporaryDatabase() throws -> SQLiteDatabase {

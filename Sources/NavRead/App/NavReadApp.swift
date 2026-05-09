@@ -25,6 +25,11 @@ struct NavReadApp: App {
                     NotificationCenter.default.post(name: .navReadQuickCapture, object: nil)
                 }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
+
+                Button("Quotes") {
+                    NotificationCenter.default.post(name: .navReadOpenQuoteVault, object: nil)
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
             }
         }
 
@@ -48,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 extension Notification.Name {
     static let navReadAddBook = Notification.Name("navReadAddBook")
     static let navReadQuickCapture = Notification.Name("navReadQuickCapture")
+    static let navReadOpenQuoteVault = Notification.Name("navReadOpenQuoteVault")
     static let navReadCodexAuthCompleted = Notification.Name("navReadCodexAuthCompleted")
     static let navReadCodexAuthFailed = Notification.Name("navReadCodexAuthFailed")
 }

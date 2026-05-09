@@ -34,7 +34,7 @@ struct SearchResultsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Search")
                         .font(.system(size: 34, weight: .semibold, design: .serif))
-                    Text("\(store.filteredBooks.count) books · \(store.searchQuoteMatches.count) quotes")
+                    Text("\(store.filteredBooks.count) books · \(store.searchQuoteMatches.count) book quotes · \(store.searchSavedQuoteMatches.count) standalone quotes")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -47,9 +47,9 @@ struct SearchResultsView: View {
                 .buttonStyle(GhostButtonStyle())
             }
 
-            if store.filteredBooks.isEmpty && store.searchQuoteMatches.isEmpty {
+            if store.filteredBooks.isEmpty && store.searchQuoteMatches.isEmpty && store.searchSavedQuoteMatches.isEmpty {
                 MinimalPanel {
-                    ContentUnavailableView("No results", systemImage: "magnifyingglass", description: Text("Try another title, author, tag, note, or quote."))
+                    ContentUnavailableView("No results", systemImage: "magnifyingglass", description: Text("Try another title, author, tag, note, learning, or quote."))
                         .frame(maxWidth: .infinity, minHeight: 180)
                 }
             }
@@ -89,11 +89,28 @@ struct SearchResultsView: View {
             }
 
             if !store.searchQuoteMatches.isEmpty {
-                Text("Quotes")
+                Text("Book Quotes")
                     .font(.headline)
                 VStack(spacing: 10) {
                     ForEach(store.searchQuoteMatches) { quote in
                         QuoteRow(quote: quote)
+                    }
+                }
+            }
+
+            if !store.searchSavedQuoteMatches.isEmpty {
+                HStack {
+                    Text("Standalone Quotes")
+                        .font(.headline)
+                    Spacer()
+                    Button("Open Quotes") {
+                        NotificationCenter.default.post(name: .navReadOpenQuoteVault, object: nil)
+                    }
+                    .buttonStyle(GhostButtonStyle())
+                }
+                VStack(spacing: 10) {
+                    ForEach(store.searchSavedQuoteMatches) { quote in
+                        SavedQuoteSearchRow(quote: quote)
                     }
                 }
             }
@@ -182,15 +199,24 @@ struct ReadingWorkspace: View {
     var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .top, spacing: 16) {
-                ChapterListPanel()
-                    .frame(width: 260)
-                QuotePanel()
-                    .frame(minWidth: 420)
+                VStack(alignment: .leading, spacing: 16) {
+                    ChapterListPanel()
+                    BookLearningsPanel()
+                }
+                .frame(width: 280)
+
+                VStack(alignment: .leading, spacing: 16) {
+                    QuotePanel()
+                    ChapterLearningsPanel()
+                }
+                .frame(minWidth: 460)
             }
 
             VStack(alignment: .leading, spacing: 16) {
                 ChapterListPanel()
+                BookLearningsPanel()
                 QuotePanel()
+                ChapterLearningsPanel()
             }
         }
     }
@@ -233,7 +259,7 @@ struct ChapterListPanel: View {
                         }
                         .padding(.trailing, 4)
                     }
-                    .frame(maxHeight: 460)
+                    .frame(maxHeight: 245)
                     .scrollIndicators(.visible)
                 }
 
@@ -255,6 +281,138 @@ struct ChapterListPanel: View {
                     .environmentObject(store)
             }
         }
+    }
+}
+
+struct ChapterLearningsPanel: View {
+    @EnvironmentObject private var store: NavReadStore
+    @State private var draft = ""
+    @State private var activeChapterID: UUID?
+
+    private var isDirty: Bool {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines) != (store.selectedChapter?.learnings ?? "")
+    }
+
+    var body: some View {
+        MinimalPanel {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Chapter Learnings")
+                            .font(.headline)
+                        Text("Notes for the selected chapter. AI sees these separately.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Save") {
+                        if let chapter = store.selectedChapter {
+                            store.updateChapterLearnings(chapter, learnings: draft)
+                        }
+                    }
+                    .buttonStyle(GhostButtonStyle())
+                    .disabled(store.selectedChapter == nil || !isDirty)
+                }
+
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $draft)
+                        .font(.system(size: 13))
+                        .lineSpacing(3)
+                        .frame(height: 78)
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                    if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Write the insight, pattern, or reminder from this chapter.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 16)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .background(.background.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(.primary.opacity(0.08), lineWidth: 1)
+                )
+            }
+        }
+        .onAppear(perform: syncDraft)
+        .onChange(of: store.selectedChapter?.id) { _, _ in
+            syncDraft()
+        }
+    }
+
+    private func syncDraft() {
+        guard activeChapterID != store.selectedChapter?.id else { return }
+        activeChapterID = store.selectedChapter?.id
+        draft = store.selectedChapter?.learnings ?? ""
+    }
+}
+
+struct BookLearningsPanel: View {
+    @EnvironmentObject private var store: NavReadStore
+    @State private var draft = ""
+    @State private var activeBookID: UUID?
+
+    private var isDirty: Bool {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines) != (store.selectedBook?.learnings ?? "")
+    }
+
+    var body: some View {
+        MinimalPanel {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Book Learnings")
+                            .font(.headline)
+                        Text("Whole-book takeaways. Kept separate from chapter notes.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Save") {
+                        if let book = store.selectedBook {
+                            store.updateBookLearnings(book, learnings: draft)
+                        }
+                    }
+                    .buttonStyle(GhostButtonStyle())
+                    .disabled(store.selectedBook == nil || !isDirty)
+                }
+
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $draft)
+                        .font(.system(size: 13))
+                        .lineSpacing(3)
+                        .frame(height: 128)
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                    if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Type the principles, ideas, warnings, frameworks, or recurring patterns from the book.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 16)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .background(.background.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(.primary.opacity(0.08), lineWidth: 1)
+                )
+            }
+        }
+        .onAppear(perform: syncDraft)
+        .onChange(of: store.selectedBook?.id) { _, _ in
+            syncDraft()
+        }
+    }
+
+    private func syncDraft() {
+        guard activeBookID != store.selectedBook?.id else { return }
+        activeBookID = store.selectedBook?.id
+        draft = store.selectedBook?.learnings ?? ""
     }
 }
 
@@ -316,7 +474,7 @@ struct QuotePanel: View {
                         Text(title)
                             .font(.headline)
                             .lineLimit(2)
-                        Text("\(chapterQuotes.count) saved quotes")
+                        Text("\(chapterQuotes.count) quotes")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -357,7 +515,7 @@ struct EmptyQuoteState: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("No quotes in this chapter yet.")
                 .font(.system(size: 14, weight: .semibold))
-            Text("Use Add Quote for manual entry, or Capture for OCR/PDF/web import.")
+            Text("Use Add Quote for manual entry, or Capture for OCR, PDFs, images, and web import.")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
         }
@@ -388,7 +546,7 @@ struct QuoteComposer: View {
                     .scrollContentBackground(.hidden)
                     .padding(10)
                 if quoteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("Paste or type the quote here")
+                    Text("Paste or type a quote")
                         .font(.system(size: 15))
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 16)
@@ -494,6 +652,49 @@ struct QuoteRow: View {
         .sheet(isPresented: $editing) {
             QuoteEditSheet(quote: quote)
                 .environmentObject(store)
+        }
+    }
+}
+
+struct SavedQuoteSearchRow: View {
+    @EnvironmentObject private var store: NavReadStore
+    var quote: SavedQuote
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("\"\(quote.text)\"")
+                .font(.system(size: 17, weight: .medium, design: .serif))
+                .lineSpacing(4)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 8) {
+                Text(quote.attribution)
+                Spacer()
+                ForEach(quote.tags.prefix(3), id: \.self) { tag in
+                    TagPill(text: tag)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .contextMenu {
+            Button {
+                store.copySavedQuoteCard(quote)
+            } label: {
+                Label("Copy Card", systemImage: "doc.on.doc")
+            }
+            Button(role: .destructive) {
+                store.deleteSavedQuote(quote)
+            } label: {
+                Text("Delete")
+            }
         }
     }
 }

@@ -10,6 +10,8 @@ struct ContentView: View {
     @State private var showingCapture = false
     @State private var showingAI = false
     @State private var showingSettings = false
+    @State private var quoteSearchText = ""
+    @SceneStorage("navReadWorkspaceMode") private var workspaceModeRaw = WorkspaceMode.books.rawValue
 
     var body: some View {
         NavigationSplitView {
@@ -19,12 +21,30 @@ struct ContentView: View {
             ZStack {
                 MorphingBackground(accentHex: "#000000")
 
-                BookWorkspaceView(namespace: coverNamespace)
-                    .padding(24)
+                Group {
+                    switch workspaceMode {
+                    case .books:
+                        BookWorkspaceView(namespace: coverNamespace)
+                            .padding(24)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .leading).combined(with: .opacity),
+                                removal: .move(edge: .trailing).combined(with: .opacity)
+                            ))
+                    case .quotes:
+                        QuotesWorkspaceView(query: $quoteSearchText, embedded: true)
+                            .padding(24)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .trailing).combined(with: .opacity),
+                                removal: .move(edge: .leading).combined(with: .opacity)
+                            ))
+                    }
+                }
+                .animation(NavReadTheme.animationSnappy, value: workspaceMode)
             }
             .toolbar {
                 ToolbarItemGroup {
                     HStack(spacing: 6) {
+                        WorkspaceModeToggle(selection: workspaceModeBinding)
                         ToolbarButton(icon: "plus", label: "Add Book") {
                             showingAddBook = true
                         }
@@ -35,7 +55,7 @@ struct ContentView: View {
                         ToolbarButton(icon: "brain.head.profile", label: "Ask AI") {
                             showingAI = true
                         }
-                        .disabled(store.selectedBook == nil)
+                        .disabled(store.selectedBook == nil && store.savedQuotes.isEmpty)
                         ShareMenu()
                         AppearanceToggleButton()
                         ToolbarButton(icon: "gearshape", label: "Settings") {
@@ -45,7 +65,7 @@ struct ContentView: View {
                 }
             }
         }
-        .searchable(text: $store.searchText, placement: .toolbar, prompt: "Search books, quotes, tags...")
+        .searchable(text: activeSearchText, placement: .toolbar, prompt: searchPrompt)
         .sheet(isPresented: $showingAddBook) {
             AddBookSheet()
                 .environmentObject(store)
@@ -84,12 +104,51 @@ struct ContentView: View {
                 showingCapture = true
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .navReadOpenQuoteVault)) { _ in
+            withAnimation(NavReadTheme.animationSnappy) {
+                workspaceModeRaw = WorkspaceMode.quotes.rawValue
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .navReadCodexAuthCompleted)) { notification in
             store.codexCallbackCompleted(accountID: notification.userInfo?["accountID"] as? String ?? "")
         }
         .onReceive(NotificationCenter.default.publisher(for: .navReadCodexAuthFailed)) { notification in
             store.codexCallbackFailed(message: notification.userInfo?["message"] as? String ?? "Codex sign-in failed.")
         }
+    }
+
+    private var workspaceMode: WorkspaceMode {
+        WorkspaceMode(rawValue: workspaceModeRaw) ?? .books
+    }
+
+    private var workspaceModeBinding: Binding<WorkspaceMode> {
+        Binding(
+            get: { workspaceMode },
+            set: { newValue in
+                withAnimation(NavReadTheme.animationSnappy) {
+                    workspaceModeRaw = newValue.rawValue
+                }
+            }
+        )
+    }
+
+    private var activeSearchText: Binding<String> {
+        Binding(
+            get: {
+                workspaceMode == .books ? store.searchText : quoteSearchText
+            },
+            set: { newValue in
+                if workspaceMode == .books {
+                    store.searchText = newValue
+                } else {
+                    quoteSearchText = newValue
+                }
+            }
+        )
+    }
+
+    private var searchPrompt: String {
+        workspaceMode == .books ? "Search books, quotes, tags..." : "Search standalone quotes..."
     }
 
     private var shouldShowFirstRunOnboarding: Bool {
@@ -104,6 +163,75 @@ struct ContentView: View {
         )
         hasCompletedFirstRunOnboarding = state.hasCompleted
         hasStartedFirstRunOnboarding = state.hasStarted
+    }
+}
+
+private enum WorkspaceMode: String, CaseIterable, Identifiable {
+    case books
+    case quotes
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .books: "Books"
+        case .quotes: "Quotes"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .books: "books.vertical"
+        case .quotes: "quote.opening"
+        }
+    }
+}
+
+private struct WorkspaceModeToggle: View {
+    @Binding var selection: WorkspaceMode
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(WorkspaceMode.allCases) { mode in
+                Button {
+                    withAnimation(NavReadTheme.animationSnappy) {
+                        selection = mode
+                    }
+                } label: {
+                    Label(mode.title, systemImage: mode.icon)
+                        .labelStyle(.titleAndIcon)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(selection == mode ? selectedForeground : .secondary)
+                        .frame(width: 82, height: 28)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(mode.title)
+                .background {
+                    if selection == mode {
+                        Capsule()
+                            .fill(selectedBackground)
+                            .shadow(color: .black.opacity(colorScheme == .dark ? 0.22 : 0.10), radius: 8, y: 3)
+                    }
+                }
+            }
+        }
+        .padding(3)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(
+            Capsule()
+                .strokeBorder(.primary.opacity(0.08), lineWidth: 1)
+        )
+        .help("Switch between Books and Quotes")
+    }
+
+    private var selectedBackground: Color {
+        colorScheme == .dark ? .white.opacity(0.16) : .black.opacity(0.88)
+    }
+
+    private var selectedForeground: Color {
+        colorScheme == .dark ? .white : .white
     }
 }
 
@@ -155,7 +283,7 @@ struct ShareMenu: View {
                     Label("Add to Apple Notes", systemImage: "note.text")
                 }
             }
-            Section("Quote Card") {
+            Section("Selected Quote Card") {
                 ForEach(QuoteCardFormat.allCases) { format in
                     Menu(format.title) {
                         Button {
@@ -220,7 +348,7 @@ struct OnboardingView: View {
                 }
                 .opacity(appeared ? 1 : 0)
                 .offset(y: appeared ? 0 : 16)
-                Text("Add a book. Pick a chapter. Save the quotes you want to remember.")
+                Text("Add a book. Pick a chapter. Save the ideas, quotes, notes, and passages you want to remember.")
                     .font(.system(size: 17))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

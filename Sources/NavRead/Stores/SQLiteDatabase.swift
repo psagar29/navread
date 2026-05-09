@@ -44,6 +44,7 @@ final class SQLiteDatabase {
                 author TEXT NOT NULL,
                 isbn TEXT NOT NULL,
                 summary TEXT NOT NULL,
+                learnings TEXT NOT NULL DEFAULT '',
                 cover_asset_path TEXT,
                 dominant_hex TEXT NOT NULL,
                 metadata_source TEXT NOT NULL,
@@ -61,7 +62,8 @@ final class SQLiteDatabase {
                 page_end INTEGER,
                 ai_generated INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                learnings TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS captures (
@@ -87,6 +89,17 @@ final class SQLiteDatabase {
                 source_type TEXT NOT NULL,
                 source_url TEXT NOT NULL,
                 capture_id TEXT REFERENCES captures(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS saved_quotes (
+                id TEXT PRIMARY KEY,
+                text TEXT NOT NULL,
+                author TEXT NOT NULL,
+                source TEXT NOT NULL,
+                note TEXT NOT NULL,
+                tags_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -122,15 +135,18 @@ final class SQLiteDatabase {
             CREATE INDEX IF NOT EXISTS idx_chapters_book ON chapters(book_id, order_index);
             CREATE INDEX IF NOT EXISTS idx_quotes_book ON quotes(book_id, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_quotes_chapter ON quotes(chapter_id);
+            CREATE INDEX IF NOT EXISTS idx_saved_quotes_updated ON saved_quotes(updated_at DESC);
             """
         )
         try addColumnIfNeeded(table: "books", column: "nickname", definition: "TEXT NOT NULL DEFAULT ''")
+        try addColumnIfNeeded(table: "books", column: "learnings", definition: "TEXT NOT NULL DEFAULT ''")
+        try addColumnIfNeeded(table: "chapters", column: "learnings", definition: "TEXT NOT NULL DEFAULT ''")
     }
 
     func loadBooks() throws -> [Book] {
         try rows(
             """
-            SELECT id, title, nickname, author, isbn, summary, cover_asset_path, dominant_hex, metadata_source, created_at, updated_at
+            SELECT id, title, nickname, author, isbn, summary, learnings, cover_asset_path, dominant_hex, metadata_source, created_at, updated_at
             FROM books
             ORDER BY updated_at DESC
             """
@@ -142,11 +158,12 @@ final class SQLiteDatabase {
                 author: text(statement, 3),
                 isbn: text(statement, 4),
                 summary: text(statement, 5),
-                coverAssetPath: nullableText(statement, 6),
-                dominantHex: text(statement, 7),
-                metadataSource: text(statement, 8),
-                createdAt: date(statement, 9),
-                updatedAt: date(statement, 10)
+                learnings: text(statement, 6),
+                coverAssetPath: nullableText(statement, 7),
+                dominantHex: text(statement, 8),
+                metadataSource: text(statement, 9),
+                createdAt: date(statement, 10),
+                updatedAt: date(statement, 11)
             )
         }
     }
@@ -159,6 +176,7 @@ final class SQLiteDatabase {
                 title: text(statement, 2),
                 orderIndex: Int(sqlite3_column_int(statement, 3)),
                 summary: text(statement, 4),
+                learnings: text(statement, 10),
                 pageStart: nullableInt(statement, 5),
                 pageEnd: nullableInt(statement, 6),
                 aiGenerated: sqlite3_column_int(statement, 7) == 1,
@@ -180,6 +198,12 @@ final class SQLiteDatabase {
         }
     }
 
+    func loadSavedQuotes() throws -> [SavedQuote] {
+        try rows("SELECT * FROM saved_quotes ORDER BY updated_at DESC") { statement in
+            Self.mapSavedQuote(statement)
+        }
+    }
+
     func loadAllCaptures() throws -> [Capture] {
         try rows("SELECT * FROM captures ORDER BY created_at DESC") { statement in
             Self.mapCapture(statement)
@@ -196,21 +220,22 @@ final class SQLiteDatabase {
         try run(
             """
             INSERT INTO books
-            (id, title, nickname, author, isbn, summary, cover_asset_path, dominant_hex, metadata_source, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, title, nickname, author, isbn, summary, learnings, cover_asset_path, dominant_hex, metadata_source, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               title = excluded.title,
               nickname = excluded.nickname,
               author = excluded.author,
               isbn = excluded.isbn,
               summary = excluded.summary,
+              learnings = excluded.learnings,
               cover_asset_path = excluded.cover_asset_path,
               dominant_hex = excluded.dominant_hex,
               metadata_source = excluded.metadata_source,
               updated_at = excluded.updated_at
             """,
             [
-                book.id.uuidString, book.title, book.nickname, book.author, book.isbn, book.summary, book.coverAssetPath as Any,
+                book.id.uuidString, book.title, book.nickname, book.author, book.isbn, book.summary, book.learnings, book.coverAssetPath as Any,
                 book.dominantHex, book.metadataSource, iso(book.createdAt), iso(book.updatedAt)
             ]
         )
@@ -220,8 +245,8 @@ final class SQLiteDatabase {
         try run(
             """
             INSERT INTO chapters
-            (id, book_id, title, order_index, summary, page_start, page_end, ai_generated, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, book_id, title, order_index, summary, page_start, page_end, ai_generated, created_at, updated_at, learnings)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               book_id = excluded.book_id,
               title = excluded.title,
@@ -230,12 +255,13 @@ final class SQLiteDatabase {
               page_start = excluded.page_start,
               page_end = excluded.page_end,
               ai_generated = excluded.ai_generated,
-              updated_at = excluded.updated_at
+              updated_at = excluded.updated_at,
+              learnings = excluded.learnings
             """,
             [
                 chapter.id.uuidString, chapter.bookID.uuidString, chapter.title, chapter.orderIndex,
                 chapter.summary, chapter.pageStart as Any, chapter.pageEnd as Any, chapter.aiGenerated ? 1 : 0,
-                iso(chapter.createdAt), iso(chapter.updatedAt)
+                iso(chapter.createdAt), iso(chapter.updatedAt), chapter.learnings
             ]
         )
     }
@@ -264,6 +290,28 @@ final class SQLiteDatabase {
                 quote.id.uuidString, quote.bookID.uuidString, quote.chapterID?.uuidString as Any,
                 quote.rawText, quote.cleanedText, quote.pageLocator, quote.note, tags, quote.sourceType.rawValue,
                 quote.sourceURL, quote.captureID?.uuidString as Any, iso(quote.createdAt), iso(quote.updatedAt)
+            ]
+        )
+    }
+
+    func insert(savedQuote: SavedQuote) throws {
+        let tags = try String(data: encoder.encode(savedQuote.tags), encoding: .utf8) ?? "[]"
+        try run(
+            """
+            INSERT INTO saved_quotes
+            (id, text, author, source, note, tags_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              text = excluded.text,
+              author = excluded.author,
+              source = excluded.source,
+              note = excluded.note,
+              tags_json = excluded.tags_json,
+              updated_at = excluded.updated_at
+            """,
+            [
+                savedQuote.id.uuidString, savedQuote.text, savedQuote.author, savedQuote.source,
+                savedQuote.note, tags, iso(savedQuote.createdAt), iso(savedQuote.updatedAt)
             ]
         )
     }
@@ -320,6 +368,10 @@ final class SQLiteDatabase {
 
     func deleteQuote(_ id: UUID) throws {
         try run("DELETE FROM quotes WHERE id = ?", [id.uuidString])
+    }
+
+    func deleteSavedQuote(_ id: UUID) throws {
+        try run("DELETE FROM saved_quotes WHERE id = ?", [id.uuidString])
     }
 
     func transaction(_ work: () throws -> Void) throws {
@@ -407,6 +459,19 @@ final class SQLiteDatabase {
             assetPath: nullableText(statement, 5),
             sourceURL: text(statement, 6),
             createdAt: date(statement, 7)
+        )
+    }
+
+    private static func mapSavedQuote(_ statement: OpaquePointer?) -> SavedQuote {
+        SavedQuote(
+            id: uuid(statement, 0),
+            text: text(statement, 1),
+            author: text(statement, 2),
+            source: text(statement, 3),
+            note: text(statement, 4),
+            tags: decodeStringArray(text(statement, 5)),
+            createdAt: date(statement, 6),
+            updatedAt: date(statement, 7)
         )
     }
 

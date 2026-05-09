@@ -127,4 +127,3 @@ private struct OpenLibraryDoc: Decodable {
         case coverI = "cover_i"
     }
 }
-

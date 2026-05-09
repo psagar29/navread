@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 final class NavReadStore: ObservableObject {
     @Published var books: [Book] = []
     @Published var allQuotes: [Quote] = []
+    @Published var savedQuotes: [SavedQuote] = []
     @Published var allCaptures: [Capture] = []
     @Published var chapters: [Chapter] = []
     @Published var quotes: [Quote] = []
@@ -61,6 +62,8 @@ final class NavReadStore: ObservableObject {
             book.title.lowercased().contains(term)
                 || book.nickname.lowercased().contains(term)
                 || book.author.lowercased().contains(term)
+                || book.summary.lowercased().contains(term)
+                || book.learnings.lowercased().contains(term)
                 || allQuotes.contains { $0.bookID == book.id && $0.text.lowercased().contains(term) }
                 || allQuotes.contains { $0.bookID == book.id && $0.tags.contains(where: { $0.lowercased().contains(term) }) }
                 || allQuotes.contains { $0.bookID == book.id && $0.note.lowercased().contains(term) }
@@ -82,14 +85,27 @@ final class NavReadStore: ObservableObject {
         }
     }
 
+    var searchSavedQuoteMatches: [SavedQuote] {
+        let term = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !term.isEmpty else { return [] }
+        return savedQuotes.filter { quote in
+            quote.text.lowercased().contains(term)
+                || quote.author.lowercased().contains(term)
+                || quote.source.lowercased().contains(term)
+                || quote.note.lowercased().contains(term)
+                || quote.tags.contains { $0.lowercased().contains(term) }
+        }
+    }
+
     var totalQuoteCount: Int {
-        allQuotes.count
+        allQuotes.count + savedQuotes.count
     }
 
     func refresh() {
         do {
             books = try database.loadBooks()
             allQuotes = try database.loadAllQuotes()
+            savedQuotes = try database.loadSavedQuotes()
             allCaptures = try database.loadAllCaptures()
             if selectedBookID == nil || books.contains(where: { $0.id == selectedBookID }) == false {
                 selectedBookID = books.first?.id
@@ -150,6 +166,7 @@ final class NavReadStore: ObservableObject {
             author: metadata.author,
             isbn: metadata.isbn,
             summary: metadata.summary,
+            learnings: "",
             coverAssetPath: cover.path,
             dominantHex: cover.dominantHex,
             metadataSource: metadata.source,
@@ -168,6 +185,7 @@ final class NavReadStore: ObservableObject {
                                 title: draft.title,
                                 orderIndex: index,
                                 summary: draft.summary,
+                                learnings: "",
                                 pageStart: draft.pageStart,
                                 pageEnd: draft.pageEnd,
                                 aiGenerated: true,
@@ -199,12 +217,15 @@ final class NavReadStore: ObservableObject {
         }
     }
 
-    func updateBook(_ book: Book, title: String, nickname: String, author: String, summary: String) {
+    func updateBook(_ book: Book, title: String, nickname: String, author: String, summary: String, learnings: String? = nil) {
         var updated = book
         updated.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.nickname = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.author = author.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let learnings {
+            updated.learnings = learnings.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         updated.updatedAt = Date()
         guard !updated.title.isEmpty else { return }
 
@@ -213,6 +234,20 @@ final class NavReadStore: ObservableObject {
             selectedBookID = updated.id
             refresh()
             statusMessage = "Updated \(updated.displayTitle)."
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func updateBookLearnings(_ book: Book, learnings: String) {
+        var updated = book
+        updated.learnings = learnings.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.updatedAt = Date()
+        do {
+            try database.insert(book: updated)
+            selectedBookID = updated.id
+            refresh()
+            statusMessage = "Saved book learnings."
         } catch {
             statusMessage = error.localizedDescription
         }
@@ -277,6 +312,100 @@ final class NavReadStore: ObservableObject {
         }
     }
 
+    func addSavedQuote(text: String, author: String, source: String, note: String, tags: [String]) {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return }
+        let now = Date()
+        let quote = SavedQuote(
+            id: UUID(),
+            text: cleaned,
+            author: author.trimmingCharacters(in: .whitespacesAndNewlines),
+            source: source.trimmingCharacters(in: .whitespacesAndNewlines),
+            note: note.trimmingCharacters(in: .whitespacesAndNewlines),
+            tags: tags.normalizedTags(),
+            createdAt: now,
+            updatedAt: now
+        )
+        do {
+            try database.insert(savedQuote: quote)
+            savedQuotes = try database.loadSavedQuotes()
+            statusMessage = "Saved quote."
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func updateSavedQuote(_ quote: SavedQuote, text: String, author: String, source: String, note: String, tags: [String]) {
+        var updated = quote
+        updated.text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.author = author.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.source = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.tags = tags.normalizedTags()
+        updated.updatedAt = Date()
+        guard !updated.text.isEmpty else { return }
+        do {
+            try database.insert(savedQuote: updated)
+            savedQuotes = try database.loadSavedQuotes()
+            statusMessage = "Updated quote."
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func deleteSavedQuote(_ quote: SavedQuote) {
+        do {
+            try database.deleteSavedQuote(quote.id)
+            deleteSavedQuoteCardAssets(for: quote.id)
+            savedQuotes = try database.loadSavedQuotes()
+            statusMessage = "Deleted quote."
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func importSavedQuoteCandidates(_ rawText: String) async -> [SavedQuoteCandidate] {
+        let cleaned = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return [] }
+        isWorking = true
+        statusMessage = TokenVault.shared.load() == nil ? "Parsing quotes locally..." : "Asking Codex to parse quotes..."
+        defer { isWorking = false }
+        let candidates = await aiService.savedQuoteCandidates(from: cleaned)
+        statusMessage = candidates.isEmpty ? "No quote candidates found." : "Found \(candidates.count) quote candidates."
+        return candidates
+    }
+
+    @discardableResult
+    func saveSavedQuoteCandidates(_ candidates: [SavedQuoteCandidate]) -> Int {
+        let cleanedCandidates = candidates.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !cleanedCandidates.isEmpty else { return 0 }
+        let now = Date()
+        do {
+            try database.transaction {
+                for candidate in cleanedCandidates {
+                    try database.insert(
+                        savedQuote: SavedQuote(
+                            id: UUID(),
+                            text: candidate.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                            author: candidate.author.trimmingCharacters(in: .whitespacesAndNewlines),
+                            source: candidate.source.trimmingCharacters(in: .whitespacesAndNewlines),
+                            note: candidate.note.trimmingCharacters(in: .whitespacesAndNewlines),
+                            tags: candidate.tags.normalizedTags(),
+                            createdAt: now,
+                            updatedAt: now
+                        )
+                    )
+                }
+            }
+            savedQuotes = try database.loadSavedQuotes()
+            statusMessage = "Saved \(cleanedCandidates.count) quotes."
+            return cleanedCandidates.count
+        } catch {
+            statusMessage = error.localizedDescription
+            return 0
+        }
+    }
+
     func deleteBook(_ book: Book) {
         do {
             let capturePaths = try database.loadCaptures(bookID: book.id).compactMap(\.assetPath)
@@ -311,6 +440,7 @@ final class NavReadStore: ObservableObject {
             title: "New Chapter",
             orderIndex: nextIndex,
             summary: "User-created chapter.",
+            learnings: "",
             pageStart: nil,
             pageEnd: nil,
             aiGenerated: false,
@@ -339,6 +469,20 @@ final class NavReadStore: ObservableObject {
             try database.insert(chapter: updated)
             selectedChapterID = updated.id
             loadSelectedBookCollections()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func updateChapterLearnings(_ chapter: Chapter, learnings: String) {
+        var updated = chapter
+        updated.learnings = learnings.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.updatedAt = Date()
+        do {
+            try database.insert(chapter: updated)
+            selectedChapterID = updated.id
+            loadSelectedBookCollections()
+            statusMessage = "Saved chapter learnings."
         } catch {
             statusMessage = error.localizedDescription
         }
@@ -476,9 +620,10 @@ final class NavReadStore: ObservableObject {
     }
 
     func askAI(_ prompt: String) async -> String {
-        guard let book = selectedBook else { return "Add a book first." }
+        guard selectedBook != nil || !savedQuotes.isEmpty else { return "Add a book or save a standalone quote first." }
         if TokenVault.shared.load() == nil {
-            return "Codex is not connected. Sign in to use model-authored replies. Local context: \(book.title), \(chapters.count) chapters, \(quotes.count) quotes."
+            let title = selectedBook?.title ?? "Quotes"
+            return "Codex is not connected. Sign in to use model-authored replies. Local context: \(title), \(chapters.count) chapters, \(quotes.count) book quotes, \(savedQuotes.count) standalone quotes."
         }
         return await aiService.chatReply(prompt: prompt, context: aiContextDescription())
     }
@@ -488,15 +633,16 @@ final class NavReadStore: ObservableObject {
         conversationHistory: String = "",
         attachments: [AIAttachment] = []
     ) -> AsyncThrowingStream<String, Error> {
-        guard let book = selectedBook else {
+        guard selectedBook != nil || !savedQuotes.isEmpty else {
             return AsyncThrowingStream { continuation in
-                continuation.yield("Add a book first.")
+                continuation.yield("Add a book or save a standalone quote first.")
                 continuation.finish()
             }
         }
         guard TokenVault.shared.load() != nil else {
             return AsyncThrowingStream { continuation in
-                continuation.yield("Codex is not connected. Sign in from Settings to use model-authored replies. Local context: \(book.title), \(chapters.count) chapters, \(quotes.count) quotes.")
+                let title = selectedBook?.title ?? "Quotes"
+                continuation.yield("Codex is not connected. Sign in from Settings to use model-authored replies. Local context: \(title), \(chapters.count) chapters, \(quotes.count) book quotes, \(savedQuotes.count) standalone quotes.")
                 continuation.finish()
             }
         }
@@ -807,6 +953,74 @@ final class NavReadStore: ObservableObject {
         }
     }
 
+    func copySavedQuoteCard(_ quote: SavedQuote, format: QuoteCardFormat = .square) {
+        guard let rendered = QuoteCardRenderer.render(savedQuote: quote, format: format) else {
+            statusMessage = "Could not render card."
+            return
+        }
+        copySavedQuoteCardToPasteboard(url: rendered, quote: quote)
+        statusMessage = "Quote card copied."
+    }
+
+    func saveSavedQuoteCard(_ quote: SavedQuote, format: QuoteCardFormat = .square) {
+        guard let rendered = QuoteCardRenderer.render(savedQuote: quote, format: format) else {
+            statusMessage = "Could not render card."
+            return
+        }
+        let panel = NSSavePanel()
+        panel.title = "Save Quote Card"
+        panel.nameFieldStringValue = "\(safeFilename(quote.author.isEmpty ? "NavRead-quote" : quote.author))-card.png"
+        panel.allowedContentTypes = [.png]
+        if panel.runModal() == .OK, let destination = panel.url {
+            do {
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.copyItem(at: rendered, to: destination)
+                statusMessage = "Quote card saved."
+            } catch {
+                statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func shareSavedQuoteCard(_ quote: SavedQuote, destination: SocialShareDestination = .system, format: QuoteCardFormat = .square) {
+        let shareText = socialShareText(savedQuote: quote)
+        guard let rendered = QuoteCardRenderer.render(savedQuote: quote, format: format) else {
+            statusMessage = "Could not render card."
+            return
+        }
+
+        switch destination {
+        case .system:
+            let picker = NSSharingServicePicker(items: [rendered, shareText])
+            picker.show(relativeTo: .zero, of: NSApp.keyWindow?.contentView ?? NSView(), preferredEdge: .minY)
+            statusMessage = "Opened share sheet."
+        case .x:
+            copySavedQuoteCardToPasteboard(url: rendered, quote: quote)
+            openShareURL("https://twitter.com/intent/tweet?text=\(urlEncoded(shareText))")
+            statusMessage = "Card copied. Opened X composer."
+        case .whatsapp:
+            copySavedQuoteCardToPasteboard(url: rendered, quote: quote)
+            openShareURL("https://wa.me/?text=\(urlEncoded(shareText))")
+            statusMessage = "Card copied. Opened WhatsApp share."
+        case .instagram:
+            copySavedQuoteCardToPasteboard(url: rendered, quote: quote)
+            openShareURL("https://www.instagram.com/")
+            statusMessage = "Card copied. Paste it into Instagram."
+        case .youtube:
+            copySavedQuoteCardToPasteboard(url: rendered, quote: quote)
+            openShareURL("https://www.youtube.com/")
+            statusMessage = "Card copied. Paste it into YouTube Studio or Community."
+        case .messages:
+            if let service = NSSharingService(named: .composeMessage) {
+                service.subject = "NavRead quote"
+                service.perform(withItems: [rendered, shareText])
+                statusMessage = "Opened Messages share."
+            } else {
+                shareSavedQuoteCard(quote, destination: .system, format: format)
+            }
+        }
+    }
+
     func openLibraryFolder() {
         NSWorkspace.shared.activateFileViewerSelecting([LibraryPaths.root])
     }
@@ -860,6 +1074,7 @@ final class NavReadStore: ObservableObject {
             quotes = []
             captures = []
             allQuotes = (try? database.loadAllQuotes()) ?? []
+            savedQuotes = (try? database.loadSavedQuotes()) ?? []
             allCaptures = (try? database.loadAllCaptures()) ?? []
             return
         }
@@ -868,6 +1083,7 @@ final class NavReadStore: ObservableObject {
             quotes = try database.loadQuotes(bookID: bookID)
             captures = try database.loadCaptures(bookID: bookID)
             allQuotes = try database.loadAllQuotes()
+            savedQuotes = try database.loadSavedQuotes()
             allCaptures = try database.loadAllCaptures()
             if selectedChapterID == nil || chapters.contains(where: { $0.id == selectedChapterID }) == false {
                 selectedChapterID = chapters.first?.id
@@ -899,7 +1115,7 @@ final class NavReadStore: ObservableObject {
     }
 
     private func aiContextDescription(attachments: [AIAttachment] = []) -> String {
-        guard let book = selectedBook else { return "No selected book." }
+        let book = selectedBook
         let chapterMap = chapters.enumerated().map { index, chapter in
             let pages: String
             switch (chapter.pageStart, chapter.pageEnd) {
@@ -910,7 +1126,8 @@ final class NavReadStore: ObservableObject {
             default:
                 pages = ""
             }
-            return "\(index + 1). \(chapter.title)\(pages): \(chapter.summary)"
+            let learnings = chapter.learnings.isEmpty ? "" : " Chapter learnings: \(chapter.learnings)"
+            return "\(index + 1). \(chapter.title)\(pages): \(chapter.summary)\(learnings)"
         }.joined(separator: "\n")
 
         let quoteMap = quotes.prefix(16).enumerated().map { index, quote in
@@ -926,8 +1143,14 @@ final class NavReadStore: ObservableObject {
             return "\(index + 1). \(capture.type.rawValue) [\(chapterTitle)]: \(preview)"
         }.joined(separator: "\n")
 
+        let standaloneQuoteMap = savedQuotes.prefix(24).enumerated().map { index, quote in
+            let tagList = quote.tags.isEmpty ? "" : " tags: \(quote.tags.joined(separator: ", "))"
+            let note = quote.note.isEmpty ? "" : " note: \(quote.note)"
+            return "\(index + 1). \(quote.text) — \(quote.attribution)\(tagList)\(note)"
+        }.joined(separator: "\n")
+
         let selectedChapterText = selectedChapter.map { chapter in
-            "Current chapter: \(chapter.title)\nSummary: \(chapter.summary)"
+            "Current chapter: \(chapter.title)\nSummary: \(chapter.summary)\nChapter learnings: \(chapter.learnings.isEmpty ? "None yet." : chapter.learnings)"
         } ?? "Current chapter: none selected."
 
         let selectedQuoteText = selectedQuote.map { quote in
@@ -943,13 +1166,26 @@ final class NavReadStore: ObservableObject {
             "\(index + 1). \(attachment.promptDescription())"
         }.joined(separator: "\n\n")
 
+        let bookText: String
+        if let book {
+            bookText = """
+            Book:
+            Title: \(book.title)
+            Display title: \(book.displayTitle)
+            Author: \(book.displayAuthor)
+            ISBN: \(book.isbn.isEmpty ? "None" : book.isbn)
+            Summary: \(book.summary.isEmpty ? "None" : book.summary)
+            User book learnings: \(book.learnings.isEmpty ? "None yet." : book.learnings)
+            """
+        } else {
+            bookText = """
+            Book:
+            No selected book. Use standalone quotes context.
+            """
+        }
+
         return """
-        Book:
-        Title: \(book.title)
-        Display title: \(book.displayTitle)
-        Author: \(book.displayAuthor)
-        ISBN: \(book.isbn.isEmpty ? "None" : book.isbn)
-        Summary: \(book.summary.isEmpty ? "None" : book.summary)
+        \(bookText)
 
         \(selectedChapterText)
 
@@ -958,8 +1194,11 @@ final class NavReadStore: ObservableObject {
         Chapter map:
         \(chapterMap.isEmpty ? "No chapters yet." : chapterMap)
 
-        Saved quotes:
-        \(quoteMap.isEmpty ? "No saved quotes yet." : quoteMap)
+        Book quotes:
+        \(quoteMap.isEmpty ? "No book quotes yet." : quoteMap)
+
+        Standalone quotes:
+        \(standaloneQuoteMap.isEmpty ? "No standalone quotes yet." : standaloneQuoteMap)
 
         Recent captures:
         \(captureMap.isEmpty ? "No captures yet." : captureMap)
@@ -1006,14 +1245,36 @@ final class NavReadStore: ObservableObject {
         return parts.joined(separator: "\n")
     }
 
+    private func socialShareText(savedQuote: SavedQuote) -> String {
+        var parts = ["\"\(savedQuote.text)\""]
+        if savedQuote.attribution != "Saved quote" {
+            parts.append(savedQuote.attribution)
+        }
+        if !savedQuote.note.isEmpty {
+            parts.append(savedQuote.note)
+        }
+        parts.append("Saved with NavRead")
+        return parts.joined(separator: "\n")
+    }
+
     private func copyQuoteCardToPasteboard(url: URL, quote: Quote, book: Book) {
+        NSPasteboard.general.clearContents()
+        if let image = NSImage(contentsOf: url) {
+            NSPasteboard.general.writeObjects([image, url as NSURL])
+        } else {
+        NSPasteboard.general.writeObjects([url as NSURL])
+        }
+        NSPasteboard.general.setString(socialShareText(quote: quote, book: book), forType: .string)
+    }
+
+    private func copySavedQuoteCardToPasteboard(url: URL, quote: SavedQuote) {
         NSPasteboard.general.clearContents()
         if let image = NSImage(contentsOf: url) {
             NSPasteboard.general.writeObjects([image, url as NSURL])
         } else {
             NSPasteboard.general.writeObjects([url as NSURL])
         }
-        NSPasteboard.general.setString(socialShareText(quote: quote, book: book), forType: .string)
+        NSPasteboard.general.setString(socialShareText(savedQuote: quote), forType: .string)
     }
 
     private func openShareURL(_ value: String) {
@@ -1041,6 +1302,14 @@ final class NavReadStore: ObservableObject {
 
     private func deleteQuoteCardAssets(for quoteID: UUID) {
         let prefix = quoteID.uuidString
+        guard let files = try? FileManager.default.contentsOfDirectory(at: LibraryPaths.cards, includingPropertiesForKeys: nil) else { return }
+        for url in files where url.lastPathComponent.hasPrefix(prefix) {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func deleteSavedQuoteCardAssets(for quoteID: UUID) {
+        let prefix = "saved-\(quoteID.uuidString)"
         guard let files = try? FileManager.default.contentsOfDirectory(at: LibraryPaths.cards, includingPropertiesForKeys: nil) else { return }
         for url in files where url.lastPathComponent.hasPrefix(prefix) {
             try? FileManager.default.removeItem(at: url)

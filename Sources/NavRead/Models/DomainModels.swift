@@ -39,6 +39,7 @@ struct Book: Identifiable, Codable, Hashable {
     var author: String
     var isbn: String
     var summary: String
+    var learnings: String
     var coverAssetPath: String?
     var dominantHex: String
     var metadataSource: String
@@ -60,6 +61,7 @@ struct Chapter: Identifiable, Codable, Hashable {
     var title: String
     var orderIndex: Int
     var summary: String
+    var learnings: String
     var pageStart: Int?
     var pageEnd: Int?
     var aiGenerated: Bool
@@ -85,6 +87,34 @@ struct Quote: Identifiable, Codable, Hashable {
     var text: String {
         cleanedText.isEmpty ? rawText : cleanedText
     }
+}
+
+struct SavedQuote: Identifiable, Codable, Hashable {
+    var id: UUID
+    var text: String
+    var author: String
+    var source: String
+    var note: String
+    var tags: [String]
+    var createdAt: Date
+    var updatedAt: Date
+
+    var attribution: String {
+        let parts = [author, source]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return parts.isEmpty ? "Saved quote" : parts.joined(separator: " / ")
+    }
+}
+
+struct SavedQuoteCandidate: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var text: String
+    var author: String
+    var source: String
+    var note: String
+    var tags: [String]
+    var confidence: Double
 }
 
 struct Capture: Identifiable, Codable, Hashable {
@@ -257,7 +287,8 @@ extension Book {
         nickname: "",
         author: "Rick Rubin",
         isbn: "",
-        summary: "A working shelf for captured passages, ideas, and context.",
+        summary: "A working shelf for captured quotes, ideas, and context.",
+        learnings: "",
         coverAssetPath: nil,
         dominantHex: "#6C7A58",
         metadataSource: "sample",

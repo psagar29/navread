@@ -125,7 +125,7 @@ struct FirstRunOnboardingView: View {
                     .font(.system(size: 38, weight: .bold, design: .serif))
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("Add your first books, connect Codex, then NavRead can resolve covers, draft chapters, classify captures, and help turn reading into searchable quotes.")
+                Text("Add your first books, connect Codex, then NavRead can resolve covers, draft chapters, classify captures, and keep quotes plus book and chapter learnings searchable.")
                     .font(.system(size: 15))
                     .foregroundStyle(.secondary)
                     .lineSpacing(3)
@@ -133,7 +133,7 @@ struct FirstRunOnboardingView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                OnboardingCapability(icon: "books.vertical", title: "Books first", text: "Every quote lives inside a book, chapter, and page context.")
+                OnboardingCapability(icon: "books.vertical", title: "Books first", text: "Book quotes live inside chapter context. Standalone quotes get their own section.")
                 OnboardingCapability(icon: "brain.head.profile", title: "Codex connected", text: "AI stays user-triggered and scoped to current library context.")
                 OnboardingCapability(icon: "square.and.arrow.up", title: "Ready to export", text: "Markdown, CSV, JSON, quote cards, and Notes sharing stay local-first.")
             }
@@ -198,7 +198,7 @@ struct FirstRunOnboardingView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Connect Codex.")
                     .font(.system(size: 30, weight: .bold, design: .serif))
-                Text("Connect now for AI chapter scaffolds, capture classification, quote cleanup, and chat. You can also finish setup and connect later from Settings.")
+                Text("Connect now for AI chapter scaffolds, capture classification, saved-item cleanup, and chat. You can also finish setup and connect later from Settings.")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .lineSpacing(2)

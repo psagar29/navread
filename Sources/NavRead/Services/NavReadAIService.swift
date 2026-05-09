@@ -484,6 +484,18 @@ actor NavReadAIService {
         }
     }
 
+    func savedQuoteCandidates(from text: String, preferCodex: Bool = true) async -> [SavedQuoteCandidate] {
+        let cleaned = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(24_000))
+        guard !cleaned.isEmpty else { return [] }
+        if preferCodex,
+           TokenVault.shared.load() != nil,
+           let generated = try? await codexSavedQuoteCandidates(from: cleaned),
+           !generated.isEmpty {
+            return generated
+        }
+        return offlineSavedQuoteCandidates(from: cleaned)
+    }
+
     func chatReply(prompt: String, context: String, conversationHistory: String = "") async -> String {
         guard TokenVault.shared.load() != nil else {
             return "Codex is not connected."
@@ -537,7 +549,7 @@ actor NavReadAIService {
             .joined(separator: "\n")
         let systemPrompt = "You classify and extract reading captures for NavRead. Return only valid JSON. Preserve exact source text in text; clean OCR only in cleaned_text."
         let userPrompt = """
-        Extract the best saved items from this captured source. Classify each item as one of:
+        Extract the best quote candidates from this captured source. Classify each candidate as one of:
         quote, passage, idea, note, question, code.
         Assign chapter_index when plausible.
 
@@ -567,15 +579,49 @@ actor NavReadAIService {
         return decodeQuoteCandidates(raw, chapters: chapters)
     }
 
+    private func codexSavedQuoteCandidates(from text: String) async throws -> [SavedQuoteCandidate] {
+        let systemPrompt = "You parse bulk standalone quotes for NavRead. Return only valid JSON. Do not invent quote text."
+        let userPrompt = """
+        Parse this bulk quote paste into standalone quotes.
+
+        Rules:
+        - Preserve the quote wording exactly in text, except trimming quote marks and whitespace.
+        - Extract author/person when present.
+        - Extract source/book/link/context when present.
+        - Create concise tags and a short useful note.
+        - Skip empty lines, headings, duplicate repeats, and non-quote filler.
+        - If author or source is unknown, use an empty string.
+
+        Paste:
+        \(text.prefix(24_000))
+
+        Return JSON:
+        {
+          "quotes": [
+            {
+              "text": "quote text",
+              "author": "author or person",
+              "source": "source/book/link/context",
+              "note": "short note",
+              "tags": ["tag"],
+              "confidence": 0.0
+            }
+          ]
+        }
+        """
+        let raw = try await codexText(systemPrompt: systemPrompt, userPrompt: userPrompt)
+        return decodeSavedQuoteCandidates(raw)
+    }
+
     private static let chatSystemPrompt = """
-    You are NavRead AI, a concise reading, research, and capture assistant inside a macOS quote library.
+    You are NavRead AI, a concise reading, research, and quote assistant inside a macOS reading library.
     Use the provided NavRead context first. If the user asks for general literary or technical help, clearly separate library-backed facts from general reasoning.
     Capabilities:
-    - Explain passages, quotes, chapters, and author intent.
-    - Extract quote candidates from pasted text.
+    - Explain passages, quotes, ideas, notes, chapters, and author intent.
+    - Extract useful quote candidates from pasted text.
     - Clean OCR while preserving meaning.
-    - Classify saved material as quote, passage, idea, note, question, or code.
-    - Suggest tags, notes, chapter placement, and related saved quotes.
+    - Classify captured material as quote, passage, idea, note, question, or code.
+    - Suggest tags, notes, chapter placement, and related quotes.
     Output rules:
     - Use short display-friendly Markdown: brief headings, bullets, numbered steps, and fenced code only for actual code.
     - Do not output JSON unless the user explicitly asks for it.
@@ -745,6 +791,93 @@ actor NavReadAIService {
         }
     }
 
+    private func decodeSavedQuoteCandidates(_ raw: String) -> [SavedQuoteCandidate] {
+        guard let object = extractJSONObject(raw),
+              let quotes = object["quotes"] as? [[String: Any]] else { return [] }
+        var seen = Set<String>()
+        return quotes.compactMap { item in
+            guard let text = (item["text"] as? String)?.cleanedQuoteText, !text.isEmpty else { return nil }
+            let key = text.normalizedQuoteKey
+            guard seen.insert(key).inserted else { return nil }
+            return SavedQuoteCandidate(
+                text: text,
+                author: ((item["author"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                source: ((item["source"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                note: ((item["note"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                tags: ((item["tags"] as? [String]) ?? suggestedTags(for: text)).normalizedTags(),
+                confidence: (item["confidence"] as? Double) ?? 0.75
+            )
+        }
+    }
+
+    private func offlineSavedQuoteCandidates(from text: String) -> [SavedQuoteCandidate] {
+        var candidates: [SavedQuoteCandidate] = []
+        var seen = Set<String>()
+        for block in quoteBlocks(from: text).prefix(120) {
+            guard let parsed = parseStandaloneQuote(block), !parsed.text.isEmpty else { continue }
+            let key = parsed.text.normalizedQuoteKey
+            guard seen.insert(key).inserted else { continue }
+            candidates.append(
+                SavedQuoteCandidate(
+                    text: parsed.text,
+                    author: parsed.author,
+                    source: parsed.source,
+                    note: parsed.source.isEmpty ? "Bulk imported quote." : "Bulk imported from \(parsed.source).",
+                    tags: suggestedTags(for: parsed.text).normalizedTags(),
+                    confidence: parsed.author.isEmpty ? 0.62 : 0.76
+                )
+            )
+        }
+        return candidates
+    }
+
+    private func quoteBlocks(from text: String) -> [String] {
+        let blankSeparated = text
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if blankSeparated.count > 1 {
+            return blankSeparated
+        }
+        return text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count > 8 }
+    }
+
+    private func parseStandaloneQuote(_ block: String) -> (text: String, author: String, source: String)? {
+        var cleaned = block
+            .replacingOccurrences(of: "“", with: "\"")
+            .replacingOccurrences(of: "”", with: "\"")
+            .replacingOccurrences(of: "’", with: "'")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        cleaned = cleaned.replacingOccurrences(of: "\n", with: " ")
+        while cleaned.contains("  ") {
+            cleaned = cleaned.replacingOccurrences(of: "  ", with: " ")
+        }
+
+        let separators = [" — ", " – ", " - ", " -- "]
+        for separator in separators {
+            if let range = cleaned.range(of: separator, options: .backwards) {
+                let quote = String(cleaned[..<range.lowerBound]).cleanedQuoteText
+                let attribution = String(cleaned[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard quote.count > 8 else { continue }
+                let parts = attribution.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                return (quote, parts.first ?? "", parts.dropFirst().joined(separator: ", "))
+            }
+        }
+
+        if cleaned.hasPrefix("\""), let closing = cleaned.dropFirst().firstIndex(of: "\"") {
+            let quote = String(cleaned[cleaned.index(after: cleaned.startIndex)..<closing]).cleanedQuoteText
+            let rest = String(cleaned[cleaned.index(after: closing)...]).trimmingCharacters(in: CharacterSet(charactersIn: " -—–,"))
+            guard quote.count > 8 else { return nil }
+            return (quote, rest, "")
+        }
+
+        let quote = cleaned.cleanedQuoteText
+        return quote.count > 8 ? (quote, "", "") : nil
+    }
+
     private func extractJSONObject(_ raw: String) -> [String: Any]? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let candidates = [
@@ -831,6 +964,21 @@ private func classifyKind(_ text: String) -> CapturedContentKind {
         return .passage
     }
     return .quote
+}
+
+private extension String {
+    var cleanedQuoteText: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”‘’"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var normalizedQuoteKey: String {
+        lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
 }
 
 private extension [String] {
