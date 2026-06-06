@@ -15,7 +15,7 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(namespace: coverNamespace)
+            SidebarView(namespace: coverNamespace, openBook: openBookFromSidebar)
                 .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
         } detail: {
             ZStack {
@@ -163,6 +163,14 @@ struct ContentView: View {
         )
         hasCompletedFirstRunOnboarding = state.hasCompleted
         hasStartedFirstRunOnboarding = state.hasStarted
+    }
+
+    private func openBookFromSidebar(_ book: Book) {
+        withAnimation(NavReadTheme.animationSnappy) {
+            store.searchText = ""
+            workspaceModeRaw = WorkspaceMode.books.rawValue
+            store.selectBook(book)
+        }
     }
 }
 

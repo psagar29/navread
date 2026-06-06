@@ -5,6 +5,7 @@ struct SidebarView: View {
     @EnvironmentObject private var store: NavReadStore
     @Environment(\.colorScheme) private var colorScheme
     var namespace: Namespace.ID
+    var openBook: (Book) -> Void = { _ in }
     @State private var editingBook: Book?
     @State private var pendingDelete: Book?
 
@@ -45,30 +46,28 @@ struct SidebarView: View {
                 } else {
                     LazyVStack(spacing: 4) {
                         ForEach(store.filteredBooks) { book in
-                            CoverShelfRow(book: book, selected: store.selectedBookID == book.id, namespace: namespace)
-                                .onTapGesture(count: 2) {
-                                    store.selectBook(book)
+                            Button {
+                                openBook(book)
+                            } label: {
+                                CoverShelfRow(book: book, selected: store.selectedBookID == book.id, namespace: namespace)
+                            }
+                            .buttonStyle(.plain)
+                            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .help("Open \(book.displayTitle)")
+                            .contextMenu {
+                                Button {
+                                    openBook(book)
                                     editingBook = book
+                                } label: {
+                                    Label("Book Options", systemImage: "slider.horizontal.3")
                                 }
-                                .onTapGesture {
-                                    withAnimation(NavReadTheme.animationSnappy) {
-                                        store.selectBook(book)
-                                    }
+                                Divider()
+                                Button(role: .destructive) {
+                                    pendingDelete = book
+                                } label: {
+                                    Label("Delete Book", systemImage: "trash")
                                 }
-                                .contextMenu {
-                                    Button {
-                                        store.selectBook(book)
-                                        editingBook = book
-                                    } label: {
-                                        Label("Book Options", systemImage: "slider.horizontal.3")
-                                    }
-                                    Divider()
-                                    Button(role: .destructive) {
-                                        pendingDelete = book
-                                    } label: {
-                                        Label("Delete Book", systemImage: "trash")
-                                    }
-                                }
+                            }
                         }
                     }
                     .padding(.horizontal, 10)
@@ -177,6 +176,8 @@ struct CoverShelfRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(

@@ -5,22 +5,37 @@ struct BookWorkspaceView: View {
     var namespace: Namespace.ID
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                if !store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    SearchResultsView()
-                } else if let book = store.selectedBook {
-                    MinimalBookHeader(book: book, namespace: namespace)
-                    ReadingWorkspace()
-                } else {
-                    OnboardingView()
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Color.clear
+                        .frame(height: 0)
+                        .id(BookWorkspaceScrollTarget.top)
+
+                    if !store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        SearchResultsView()
+                    } else if let book = store.selectedBook {
+                        MinimalBookHeader(book: book, namespace: namespace)
+                        ReadingWorkspace()
+                    } else {
+                        OnboardingView()
+                    }
+                }
+                .frame(maxWidth: 1080, alignment: .leading)
+                .padding(.bottom, 40)
+            }
+            .scrollIndicators(.hidden)
+            .onChange(of: store.selectedBookID) { _, _ in
+                withAnimation(NavReadTheme.animationSnappy) {
+                    proxy.scrollTo(BookWorkspaceScrollTarget.top, anchor: .top)
                 }
             }
-            .frame(maxWidth: 1080, alignment: .leading)
-            .padding(.bottom, 40)
         }
-        .scrollIndicators(.hidden)
     }
+}
+
+private enum BookWorkspaceScrollTarget {
+    case top
 }
 
 // MARK: - Search Results

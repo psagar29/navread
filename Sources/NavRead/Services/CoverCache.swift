@@ -32,8 +32,19 @@ actor CoverCache {
 
     private func makePlaceholder(title: String, author: String) -> CachedCover {
         let palette = ["#6C7A58", "#405F89", "#8B5D33", "#6E4E7A", "#8E4A43", "#2F5F55"]
-        let index = abs(title.hashValue + author.hashValue) % palette.count
+        let index = placeholderIndex(title: title, author: author, paletteCount: palette.count)
         return CachedCover(path: nil, dominantHex: palette[index])
+    }
+
+    private func placeholderIndex(title: String, author: String, paletteCount: Int) -> Int {
+        guard paletteCount > 0 else { return 0 }
+
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in "\(title)\u{1F}\(author)".utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 1_099_511_628_211
+        }
+        return Int(hash % UInt64(paletteCount))
     }
 }
 
