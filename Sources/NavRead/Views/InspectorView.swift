@@ -75,6 +75,9 @@ struct AuthStatusCard: View {
                 }
             }
         }
+        .task {
+            await store.refreshCodexAuthStatus(validate: true)
+        }
     }
 }
 

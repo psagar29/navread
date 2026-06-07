@@ -60,6 +60,9 @@ struct FirstRunOnboardingView: View {
             .padding(32)
         }
         .interactiveDismissDisabled(true)
+        .task {
+            await store.refreshCodexAuthStatus(validate: true)
+        }
     }
 
     private var onboardingRail: some View {

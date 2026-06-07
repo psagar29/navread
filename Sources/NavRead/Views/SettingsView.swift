@@ -112,6 +112,9 @@ struct SettingsView: View {
         }
         .frame(minWidth: 560, idealWidth: 560, maxWidth: 560, minHeight: 420, idealHeight: 500, maxHeight: 620)
         .background(.regularMaterial)
+        .task {
+            await store.refreshCodexAuthStatus(validate: true)
+        }
     }
 }
 

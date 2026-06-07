@@ -156,7 +156,7 @@ final class NavReadStore: ObservableObject {
         statusMessage = "Caching cover..."
         let cover = await coverCache.cacheCover(from: metadata.coverURL, title: metadata.title, author: metadata.author)
         statusMessage = "Drafting chapters..."
-        let authenticated = TokenVault.shared.load() != nil
+        let authenticated = authState.authenticated
         let drafts = await aiService.chapterDrafts(for: metadata, authenticated: authenticated)
         let now = Date()
         let book = Book(
@@ -368,7 +368,7 @@ final class NavReadStore: ObservableObject {
         let cleaned = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return [] }
         isWorking = true
-        statusMessage = TokenVault.shared.load() == nil ? "Parsing quotes locally..." : "Asking Codex to parse quotes..."
+        statusMessage = authState.authenticated ? "Asking Codex to parse quotes..." : "Parsing quotes locally..."
         defer { isWorking = false }
         let candidates = await aiService.savedQuoteCandidates(from: cleaned)
         statusMessage = candidates.isEmpty ? "No quote candidates found." : "Found \(candidates.count) quote candidates."
@@ -621,7 +621,7 @@ final class NavReadStore: ObservableObject {
 
     func askAI(_ prompt: String) async -> String {
         guard selectedBook != nil || !savedQuotes.isEmpty else { return "Add a book or save a standalone quote first." }
-        if TokenVault.shared.load() == nil {
+        if !authState.authenticated {
             let title = selectedBook?.title ?? "Quotes"
             return "Codex is not connected. Sign in to use model-authored replies. Local context: \(title), \(chapters.count) chapters, \(quotes.count) book quotes, \(savedQuotes.count) standalone quotes."
         }
@@ -639,7 +639,7 @@ final class NavReadStore: ObservableObject {
                 continuation.finish()
             }
         }
-        guard TokenVault.shared.load() != nil else {
+        guard authState.authenticated else {
             return AsyncThrowingStream { continuation in
                 let title = selectedBook?.title ?? "Quotes"
                 continuation.yield("Codex is not connected. Sign in from Settings to use model-authored replies. Local context: \(title), \(chapters.count) chapters, \(quotes.count) book quotes, \(savedQuotes.count) standalone quotes.")
@@ -764,7 +764,22 @@ final class NavReadStore: ObservableObject {
     func startCodexLogin() async {
         guard !authState.pending else { return }
         authState.pending = true
-        authState.statusMessage = "Listening on localhost:1455..."
+        authState.statusMessage = "Checking Codex bridge..."
+        do {
+            let bridgeSession = try await CodexBridgeClient.shared.validatedSession()
+            if bridgeSession.authenticated {
+                applyCodexBridgeSession(bridgeSession)
+                return
+            }
+            TokenVault.shared.clear()
+            authState.statusMessage = "Opening Codex bridge sign-in..."
+            NSWorkspace.shared.open(CodexBridgeClient.shared.signInURL)
+            await waitForBridgeSignIn()
+            return
+        } catch {
+            authState.statusMessage = "Listening on localhost:1455..."
+        }
+
         do {
             let url = try await oauthService.startLogin()
             authState.statusMessage = "Opening Codex sign-in..."
@@ -777,6 +792,14 @@ final class NavReadStore: ObservableObject {
     }
 
     func completeCodexCallback(_ value: String) async {
+        do {
+            let bridgeSession = try await CodexBridgeClient.shared.completeCallback(value)
+            applyCodexBridgeSession(bridgeSession)
+            return
+        } catch {
+            // Fall through to NavRead's private OAuth flow for manual callbacks from legacy sign-in attempts.
+        }
+
         do {
             let credentials = try await oauthService.completeManualCallback(value)
             authState.authenticated = true
@@ -805,7 +828,14 @@ final class NavReadStore: ObservableObject {
 
     func signOutCodex() {
         TokenVault.shared.clear()
-        refreshAuth()
+        authState.authenticated = false
+        authState.pending = false
+        authState.accountID = ""
+        authState.statusMessage = "Codex not connected"
+        Task {
+            try? await CodexBridgeClient.shared.logout()
+            await refreshCodexAuthStatus(validate: false)
+        }
     }
 
     func exportMarkdown() -> String {
@@ -1107,6 +1137,55 @@ final class NavReadStore: ObservableObject {
             authState.accountID = ""
             authState.statusMessage = "Codex not connected"
         }
+        Task {
+            await refreshCodexAuthStatus(validate: false)
+        }
+    }
+
+    func refreshCodexAuthStatus(validate: Bool = false) async {
+        let bridgeSession: CodexBridgeSession?
+        if validate {
+            bridgeSession = try? await CodexBridgeClient.shared.validatedSession()
+        } else {
+            bridgeSession = try? await CodexBridgeClient.shared.session()
+        }
+        guard let bridgeSession else {
+            return
+        }
+        if bridgeSession.authenticated {
+            applyCodexBridgeSession(bridgeSession)
+        } else if !authState.pending {
+            if validate {
+                TokenVault.shared.clear()
+            }
+            authState.authenticated = false
+            authState.accountID = ""
+            authState.statusMessage = "Codex not connected"
+        }
+    }
+
+    private func waitForBridgeSignIn(timeout: TimeInterval = 180) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, authState.pending {
+            if let bridgeSession = try? await CodexBridgeClient.shared.session(),
+               bridgeSession.authenticated {
+                applyCodexBridgeSession(bridgeSession)
+                return
+            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+
+        if authState.pending {
+            authState.pending = false
+            authState.statusMessage = "Sign-in opened in browser. Finish there, then click Sign In to refresh."
+        }
+    }
+
+    private func applyCodexBridgeSession(_ session: CodexBridgeSession) {
+        authState.authenticated = session.authenticated
+        authState.pending = false
+        authState.accountID = session.accountID
+        authState.statusMessage = session.statusMessage
     }
 
     private func safeFilename(_ value: String) -> String {

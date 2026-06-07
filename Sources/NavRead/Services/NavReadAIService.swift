@@ -9,6 +9,235 @@ struct CodexAuthState: Equatable {
     var statusMessage = "Codex not connected"
 }
 
+struct CodexBridgeSession: Equatable {
+    var authenticated: Bool
+    var accountID: String
+    var email: String
+    var expiresAt: Date?
+    var model: String
+
+    var statusMessage: String {
+        guard authenticated else { return "Codex bridge is not connected" }
+        if !email.isEmpty { return "Codex bridge connected: \(email)" }
+        if !accountID.isEmpty { return "Codex bridge connected: \(accountID)" }
+        return "Codex bridge connected"
+    }
+}
+
+final class CodexBridgeClient: @unchecked Sendable {
+    static let shared = CodexBridgeClient()
+
+    private let apiBaseURL = URL(string: "http://127.0.0.1:1777")!
+    private let callbackBaseURL = URL(string: "http://127.0.0.1:1455")!
+
+    var signInURL: URL {
+        apiBaseURL.appendingPathComponent("auth/start")
+    }
+
+    func session() async throws -> CodexBridgeSession {
+        var request = URLRequest(url: apiBaseURL.appendingPathComponent("health"))
+        request.timeoutInterval = 1.5
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw AIError.message("Codex bridge is not available.")
+        }
+        let payload = try JSONDecoder().decode(HealthPayload.self, from: data)
+        return CodexBridgeSession(
+            authenticated: payload.authenticated ?? false,
+            accountID: payload.accountId ?? "",
+            email: payload.email ?? "",
+            expiresAt: Self.date(from: payload.expiresAt),
+            model: payload.model ?? ""
+        )
+    }
+
+    func validatedSession() async throws -> CodexBridgeSession {
+        let current = try await session()
+        guard current.authenticated else { return current }
+        do {
+            try await validateChatAccess()
+            return current
+        } catch AIError.notAuthenticated {
+            try? await logout()
+            return CodexBridgeSession(authenticated: false, accountID: "", email: "", expiresAt: nil, model: current.model)
+        } catch {
+            throw error
+        }
+    }
+
+    func logout() async throws {
+        var request = URLRequest(url: apiBaseURL.appendingPathComponent("auth/logout"))
+        request.timeoutInterval = 2
+        _ = try await URLSession.shared.data(for: request)
+    }
+
+    func completeCallback(_ value: String) async throws -> CodexBridgeSession {
+        guard let callbackURL = Self.callbackURL(from: value, baseURL: callbackBaseURL) else {
+            throw AIError.notAuthenticated
+        }
+        var request = URLRequest(url: callbackURL)
+        request.timeoutInterval = 10
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw AIError.message("Codex bridge callback failed.")
+        }
+        let session = try await session()
+        guard session.authenticated else {
+            throw AIError.notAuthenticated
+        }
+        return session
+    }
+
+    func streamChat(
+        systemPrompt: String,
+        userPrompt: String,
+        onDelta: @escaping @Sendable (String) -> Void
+    ) async throws {
+        var request = URLRequest(url: apiBaseURL.appendingPathComponent("v1/chat/completions"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 180
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "stream": true,
+            "messages": [
+                ["role": "system", "content": systemPrompt],
+                ["role": "user", "content": userPrompt]
+            ],
+            "text": ["verbosity": "medium"],
+            "reasoning_effort": "medium"
+        ])
+
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            if http.statusCode == 401 {
+                try? await logout()
+                throw AIError.notAuthenticated
+            }
+            throw AIError.message("Codex bridge response failed with HTTP \(http.statusCode).")
+        }
+
+        var didStream = false
+        var finalText = ""
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data:") else { continue }
+            let raw = String(line.dropFirst(5)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if raw == "[DONE]" { break }
+            guard let data = raw.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            if let message = Self.errorMessage(from: object) {
+                throw AIError.message(message)
+            }
+            guard let choices = object["choices"] as? [[String: Any]] else { continue }
+            for choice in choices {
+                if let delta = choice["delta"] as? [String: Any],
+                   let content = delta["content"] as? String,
+                   !content.isEmpty {
+                    didStream = true
+                    onDelta(content)
+                } else if let message = choice["message"] as? [String: Any],
+                          let content = message["content"] as? String {
+                    finalText += content
+                }
+            }
+        }
+
+        if !didStream {
+            let fallback = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !fallback.isEmpty {
+                onDelta(fallback)
+            }
+        }
+    }
+
+    private func validateChatAccess() async throws {
+        var request = URLRequest(url: apiBaseURL.appendingPathComponent("v1/chat/completions"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 45
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "stream": false,
+            "messages": [
+                ["role": "system", "content": "Reply with exactly: ok"],
+                ["role": "user", "content": "auth check"]
+            ],
+            "text": ["verbosity": "low"],
+            "reasoning_effort": "low"
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw AIError.message("Codex bridge validation failed.")
+        }
+        if http.statusCode == 401 {
+            throw AIError.notAuthenticated
+        }
+        if !(200..<300).contains(http.statusCode) {
+            let message = Self.errorMessage(from: data) ?? "Codex bridge validation failed with HTTP \(http.statusCode)."
+            if message.localizedCaseInsensitiveContains("token") && message.localizedCaseInsensitiveContains("invalid") {
+                throw AIError.notAuthenticated
+            }
+            throw AIError.message(message)
+        }
+    }
+
+    private static func callbackURL(from value: String, baseURL: URL) -> URL? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let url = URL(string: trimmed),
+           let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           components.queryItems?.contains(where: { $0.name == "code" }) == true {
+            var callback = URLComponents(url: baseURL.appendingPathComponent("auth/callback"), resolvingAgainstBaseURL: false)
+            callback?.queryItems = components.queryItems
+            return callback?.url
+        }
+
+        if trimmed.contains("code="),
+           let components = URLComponents(string: "?\(trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "?")))") {
+            var callback = URLComponents(url: baseURL.appendingPathComponent("auth/callback"), resolvingAgainstBaseURL: false)
+            callback?.queryItems = components.queryItems
+            return callback?.url
+        }
+
+        return nil
+    }
+
+    private static func date(from value: String?) -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+        return ISO8601DateFormatter().date(from: value)
+    }
+
+    private static func errorMessage(from payload: [String: Any]) -> String? {
+        if let error = payload["error"] as? [String: Any],
+           let message = error["message"] as? String,
+           !message.isEmpty {
+            return message
+        }
+        return nil
+    }
+
+    private static func errorMessage(from data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return errorMessage(from: object)
+    }
+
+    private struct HealthPayload: Decodable {
+        var authenticated: Bool?
+        var accountId: String?
+        var email: String?
+        var expiresAt: String?
+        var model: String?
+    }
+}
+
 actor CodexOAuthService {
     private let tokenURL = URL(string: "https://auth.openai.com/oauth/token")!
     private let authorizeURL = URL(string: "https://auth.openai.com/oauth/authorize")!
@@ -35,6 +264,7 @@ actor CodexOAuthService {
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "id_token_add_organizations", value: "true"),
             URLQueryItem(name: "codex_cli_simplified_flow", value: "true"),
+            URLQueryItem(name: "prompt", value: "login"),
             URLQueryItem(name: "originator", value: "pi")
         ]
         guard let url = components?.url else {
@@ -459,8 +689,7 @@ actor NavReadAIService {
     }
 
     func quoteCandidates(from text: String, chapters: [Chapter]) async -> [QuoteCandidate] {
-        if TokenVault.shared.load() != nil,
-           let generated = try? await codexQuoteCandidates(from: text, chapters: chapters),
+        if let generated = try? await codexQuoteCandidates(from: text, chapters: chapters),
            !generated.isEmpty {
             return generated
         }
@@ -488,7 +717,6 @@ actor NavReadAIService {
         let cleaned = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(24_000))
         guard !cleaned.isEmpty else { return [] }
         if preferCodex,
-           TokenVault.shared.load() != nil,
            let generated = try? await codexSavedQuoteCandidates(from: cleaned),
            !generated.isEmpty {
             return generated
@@ -497,9 +725,6 @@ actor NavReadAIService {
     }
 
     func chatReply(prompt: String, context: String, conversationHistory: String = "") async -> String {
-        guard TokenVault.shared.load() != nil else {
-            return "Codex is not connected."
-        }
         let systemPrompt = Self.chatSystemPrompt
         let userPrompt = Self.chatUserPrompt(context: context, conversationHistory: conversationHistory, prompt: prompt)
         if let reply = try? await codexText(systemPrompt: systemPrompt, userPrompt: userPrompt), !reply.isEmpty {
@@ -509,12 +734,6 @@ actor NavReadAIService {
     }
 
     nonisolated func chatReplyStream(prompt: String, context: String, conversationHistory: String = "") -> AsyncThrowingStream<String, Error> {
-        guard TokenVault.shared.load() != nil else {
-            return AsyncThrowingStream { continuation in
-                continuation.yield("Codex is not connected. Sign in from Settings to use model-authored replies.")
-                continuation.finish()
-            }
-        }
         return codexTextStream(
             systemPrompt: Self.chatSystemPrompt,
             userPrompt: Self.chatUserPrompt(context: context, conversationHistory: conversationHistory, prompt: prompt)
@@ -655,6 +874,24 @@ actor NavReadAIService {
         return AsyncThrowingStream { continuation in
             Task {
                 do {
+                    if let bridgeSession = try? await CodexBridgeClient.shared.session(),
+                       bridgeSession.authenticated {
+                        do {
+                            try await CodexBridgeClient.shared.streamChat(
+                                systemPrompt: systemPrompt,
+                                userPrompt: userPrompt,
+                                onDelta: { continuation.yield($0) }
+                            )
+                            continuation.finish()
+                            return
+                        } catch {
+                            if TokenVault.shared.load() == nil {
+                                throw error
+                            }
+                            // Fall through to the legacy direct-token path if NavRead also has tokens.
+                        }
+                    }
+
                     let oauth = CodexOAuthService()
                     var credentials = try await oauth.validCredentials()
                     var didRetryAfterUnauthorized = false
