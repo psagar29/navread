@@ -5,10 +5,10 @@ APP_NAME="NavRead"
 BUNDLE_ID="com.pranav.navread"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIGURATION="debug"
-PRODUCT_DIR="$ROOT_DIR/.build/$CONFIGURATION"
-BUNDLE_DIR="$ROOT_DIR/dist/$APP_NAME.app"
-EXECUTABLE_PATH="$PRODUCT_DIR/$APP_NAME"
+STAGING_DIR="$ROOT_DIR/.build/app-launch/$APP_NAME.app"
+INSTALL_DIR="/Applications/$APP_NAME.app"
 RESOURCE_SOURCE_DIR="$ROOT_DIR/Sources/NavRead/Resources"
+RESOURCE_BUNDLE_NAME="${APP_NAME}_${APP_NAME}.bundle"
 
 MODE="${1:-}"
 
@@ -16,16 +16,22 @@ pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
 cd "$ROOT_DIR"
 swift build -c "$CONFIGURATION"
+PRODUCT_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
+EXECUTABLE_PATH="$PRODUCT_DIR/$APP_NAME"
+RESOURCE_BUNDLE_PATH="$PRODUCT_DIR/$RESOURCE_BUNDLE_NAME"
 
-rm -rf "$BUNDLE_DIR"
-mkdir -p "$BUNDLE_DIR/Contents/MacOS"
-mkdir -p "$BUNDLE_DIR/Contents/Resources"
-cp "$EXECUTABLE_PATH" "$BUNDLE_DIR/Contents/MacOS/$APP_NAME"
+rm -rf "$STAGING_DIR"
+mkdir -p "$STAGING_DIR/Contents/MacOS"
+mkdir -p "$STAGING_DIR/Contents/Resources"
+cp "$EXECUTABLE_PATH" "$STAGING_DIR/Contents/MacOS/$APP_NAME"
 if [ -d "$RESOURCE_SOURCE_DIR" ]; then
-  cp -R "$RESOURCE_SOURCE_DIR"/. "$BUNDLE_DIR/Contents/Resources/"
+  cp -R "$RESOURCE_SOURCE_DIR"/. "$STAGING_DIR/Contents/Resources/"
+fi
+if [ -d "$RESOURCE_BUNDLE_PATH" ]; then
+  cp -R "$RESOURCE_BUNDLE_PATH" "$STAGING_DIR/Contents/Resources/$RESOURCE_BUNDLE_NAME"
 fi
 
-cat > "$BUNDLE_DIR/Contents/Info.plist" <<PLIST
+cat > "$STAGING_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -58,7 +64,12 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-/usr/bin/open -n "$BUNDLE_DIR"
+codesign --force --deep --sign - "$STAGING_DIR" >/dev/null
+rm -rf "$INSTALL_DIR"
+/usr/bin/ditto "$STAGING_DIR" "$INSTALL_DIR"
+rm -rf "$ROOT_DIR/.build/app-launch"
+
+/usr/bin/open -n "$INSTALL_DIR"
 
 case "$MODE" in
   --verify)

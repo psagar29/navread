@@ -139,6 +139,8 @@ cd navread
 ./script/build_and_run.sh
 ```
 
+`./script/build_and_run.sh` updates `/Applications/NavRead.app` so Spotlight and Launchpad only see one installed copy.
+
 Other commands:
 
 ```bash
